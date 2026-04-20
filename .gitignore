@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Datos de negocio (no subir al repo)
+DetalleMovimientosInventario*.xls
+DetalleMovimientosInventario*.xlsx
+consolidado.xlsx
+toma_fisica.xlsx
+
+# Empaquetados
+*.zip
+
+# Entornos
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
