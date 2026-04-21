@@ -92,6 +92,9 @@ class InventoryEngine:
         self.raw_df: pd.DataFrame | None = None
         self.physical_df: pd.DataFrame | None = None
         self.excluded_skus: set[str] = set()
+        # Bodegas excluidas globalmente: los movimientos donde la bodega
+        # (origen o destino) esté aquí se eliminan ANTES del análisis.
+        self.excluded_warehouses: set[str] = set()
 
     def _read_excel_flexible(self, path: str) -> pd.DataFrame:
         preview = pd.read_excel(path, header=None)
@@ -188,6 +191,16 @@ class InventoryEngine:
 
         if self.excluded_skus:
             df = df[~df["Código Producto"].isin(self.excluded_skus)]
+
+        # Exclusión global de bodegas: descartar movimientos donde origen
+        # O destino estén en la lista (aplica a todo el pipeline: KPIs,
+        # rotación, kardex, compras, etc.)
+        if self.excluded_warehouses:
+            _bad = self.excluded_warehouses
+            df = df[
+                (~df["Bodega Origen"].isin(_bad)) &
+                (~df["Bodega Destino"].isin(_bad))
+            ]
 
         if warehouse_mode == "Solo principal":
             df = df[

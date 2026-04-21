@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.2 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,8 +39,8 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.1"
-BUILD_TIME  = "20/04/2026 GMT-5"
+APP_VERSION = "v4.2"
+BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
 import logging as _logging
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.1":
+if st.session_state.get("_app_version") != "v4.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.1"
+    st.session_state["_app_version"] = "v4.2"
 
-st.set_page_config(page_title="Inventario v4.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.2", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1410,14 +1410,23 @@ with st.sidebar:
                                key="es_ms",
                                format_func=_fmt_sku,
                                placeholder="Escribe código o nombre…")
+        _prev_excl_s = set(st.session_state.excluded_skus)
         st.session_state.excluded_skus=set(excl_s); eng.excluded_skus=set(excl_s)
+        if _prev_excl_s != set(excl_s):
+            st.session_state["_recalc_pending"] = True
 
         all_wh=eng.get_warehouses()
         excl_w=st.multiselect("Excluir Bodegas", all_wh,
                                default=list(st.session_state.excl_wh),
                                key="ew_ms",
                                placeholder="Escribe para filtrar…")
+        _prev_excl_w = set(st.session_state.excl_wh)
         st.session_state.excl_wh=set(excl_w)
+        # Exclusión GLOBAL: descarta movimientos (origen o destino) en esas bodegas.
+        # Afecta KPIs, rotación, kardex, compras — todo el pipeline.
+        eng.excluded_warehouses = set(excl_w)
+        if _prev_excl_w != set(excl_w):
+            st.session_state["_recalc_pending"] = True
         st.divider()
 
         st.markdown("### ⚙️ Calcular")
@@ -1501,6 +1510,32 @@ if eng.raw_df is not None and "Fecha" in eng.raw_df.columns:
                 f"</div>",
                 unsafe_allow_html=True)
     except: pass
+
+# ── Aviso de exclusiones globales activas ──────────────────────
+_act_excl_sku = list(st.session_state.get("excluded_skus", set()))
+_act_excl_wh  = list(st.session_state.get("excl_wh", set()))
+if _act_excl_sku or _act_excl_wh:
+    _ex_lines = []
+    if _act_excl_wh:
+        _ex_lines.append(
+            f"🏪 <b>{len(_act_excl_wh)} bodega(s) excluida(s):</b> "
+            + ", ".join(f"<code>{b}</code>" for b in _act_excl_wh[:5])
+            + (f" <i>+{len(_act_excl_wh)-5} más</i>" if len(_act_excl_wh) > 5 else "")
+        )
+    if _act_excl_sku:
+        _ex_lines.append(
+            f"🏷 <b>{len(_act_excl_sku)} SKU(s) excluido(s)</b>"
+        )
+    st.markdown(
+        f"<div style='background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;"
+        f"padding:8px 14px;margin-bottom:10px;font-size:12px;color:#92400e;"
+        f"line-height:1.5'>"
+        f"<b>⚠ Exclusiones globales activas</b> — los movimientos relacionados se "
+        f"descartan del pipeline (KPIs, Rotación, Kardex, Compras, todo).<br>"
+        + "<br>".join(_ex_lines) +
+        f"</div>",
+        unsafe_allow_html=True
+    )
 
 # ── KPIs ────────────────────────────────────────────────────────
 if r is not None:
@@ -3663,69 +3698,171 @@ def _render_comparacion_fragment():
     _rap_df    = _rap_state["df"]
     if r is None:
         st.info("Ejecute el análisis primero.")
-    elif _rap_df is None or _rap_df.empty:
+        return
+    if _rap_df is None or _rap_df.empty:
         st.info("Aún no hay tomas registradas. Usa «⚡ Toma» o «📥 Importar».")
-    else:
-        st.caption(
-            "Comparación **global por SKU**: suma de la última cantidad contada "
-            "en cada ubicación vs. stock total calculado del sistema."
+        return
+
+    _inv = r.inventory_by_warehouse.copy()
+    if excl_w: _inv = _inv[~_inv["Bodega"].isin(excl_w)]
+    _all_bod = sorted(_inv["Bodega"].dropna().unique().tolist())
+
+    # Selector de "bodegas contables" (físicamente contables vs consignadas en clientes).
+    # Default: solo Bodega Principal. Se persiste en session_state.
+    if "_cmp_contables" not in st.session_state:
+        default_contables = [b for b in _all_bod if b == PRIMARY_WAREHOUSE]
+        if not default_contables and _all_bod:
+            default_contables = [_all_bod[0]]
+        st.session_state["_cmp_contables"] = default_contables
+
+    sc1, sc2 = st.columns([3, 2])
+    with sc1:
+        contables = st.multiselect(
+            "🏢 Bodegas contables (físicamente contables — se comparan contra la toma)",
+            _all_bod,
+            default=st.session_state["_cmp_contables"],
+            key="_cmp_contables",
+            help="Bodegas donde el inventario está en tu posesión y se puede contar. "
+                 "El resto se considera 'consignado en clientes' y se reporta aparte.",
         )
-        # Última cantidad contada por (SKU, Ubicación)
-        _latest = _rap_df.sort_values("Fecha").drop_duplicates(
-            subset=["Código Producto","Ubicación"], keep="last")
-        # Suma física por SKU (todas las ubicaciones)
-        _phys_sku = (_latest.groupby(["Código Producto","Nombre Producto"])
-                     ["Cantidad Física"].sum().reset_index()
-                     .rename(columns={"Cantidad Física":"Cantidad Física"}))
-        # Stock calculado por SKU (todas las bodegas del sistema)
-        _inv = r.inventory_by_warehouse.copy()
-        if excl_w: _inv = _inv[~_inv["Bodega"].isin(excl_w)]
-        _calc_sku = (_inv.groupby(["Código Producto","Nombre Producto"])
-                     ["Stock"].sum().reset_index()
-                     .rename(columns={"Stock":"Cantidad Calculada"}))
-        # Merge outer → full picture
-        _cmp = _phys_sku.merge(_calc_sku,
-                               on=["Código Producto","Nombre Producto"],
-                               how="outer").fillna(0)
-        _cmp["Diferencia"] = _cmp["Cantidad Física"] - _cmp["Cantidad Calculada"]
-        _cmp["Coincide"]   = _cmp["Diferencia"].abs() < 0.5
-        _cmp = _cmp.sort_values("Diferencia",
-                                key=lambda s: s.abs(), ascending=False)
-        # KPIs
-        _ex  = (_cmp["Coincide"].mean()*100) if len(_cmp) else 0
-        _dif = int((_cmp["Diferencia"].abs() > 0.5).sum())
-        _ok  = int(_cmp["Coincide"].sum())
-        m1,m2,m3,m4 = st.columns(4)
-        m1.metric("Exactitud", f"{_ex:.1f}%")
-        m2.metric("Con diferencia", _dif)
-        m3.metric("Coinciden", _ok)
-        m4.metric("SKUs comparados", len(_cmp))
-        # Filtro: solo diferencias / todo
-        _show_mode = st.radio("Mostrar", ["Con diferencia","Todo","Coinciden"],
-                               horizontal=True, key="cmp_mode")
-        if _show_mode == "Con diferencia":
-            _cmp_show = _cmp[_cmp["Diferencia"].abs() > 0.5].copy()
-        elif _show_mode == "Coinciden":
-            _cmp_show = _cmp[_cmp["Coincide"]].copy()
+    with sc2:
+        _tol = st.number_input(
+            "Tolerancia (± unidades para 'coincide')",
+            min_value=0.0, max_value=100.0, value=0.5, step=0.5,
+            key="_cmp_tol",
+        )
+
+    if not contables:
+        st.warning("Selecciona al menos una bodega contable.")
+        return
+
+    # ── FÍSICO: suma por SKU de la última toma en cada ubicación
+    _latest = _rap_df.sort_values("Fecha").drop_duplicates(
+        subset=["Código Producto","Ubicación"], keep="last")
+    _phys_sku = (_latest.groupby(["Código Producto","Nombre Producto"])
+                 ["Cantidad Física"].sum().reset_index())
+
+    # ── CALCULADO CONTABLE: stock SOLO en bodegas contables
+    _inv_ct  = _inv[_inv["Bodega"].isin(contables)]
+    _calc_ct = (_inv_ct.groupby(["Código Producto","Nombre Producto"])
+                ["Stock"].sum().reset_index()
+                .rename(columns={"Stock":"Cantidad Calculada"}))
+
+    # ── CONSIGNADO EN CLIENTES: stock en bodegas NO contables (separado)
+    _inv_cl  = _inv[~_inv["Bodega"].isin(contables)]
+    _cons_cl = (_inv_cl.groupby(["Código Producto","Nombre Producto"])
+                ["Stock"].sum().reset_index()
+                .rename(columns={"Stock":"En Clientes"}))
+
+    # Merge outer para la comparación
+    _cmp = _phys_sku.merge(_calc_ct,
+                           on=["Código Producto","Nombre Producto"],
+                           how="outer").fillna(0)
+    _cmp = _cmp.merge(_cons_cl,
+                      on=["Código Producto","Nombre Producto"],
+                      how="left").fillna(0)
+    _cmp["Diferencia"] = _cmp["Cantidad Física"] - _cmp["Cantidad Calculada"]
+    _cmp["Coincide"]   = _cmp["Diferencia"].abs() <= _tol
+    _cmp = _cmp.sort_values("Diferencia",
+                            key=lambda s: s.abs(), ascending=False)
+
+    # Banner explicativo
+    st.markdown(
+        f"<div style='background:#e0f2fe;border:1px solid #7dd3fc;border-radius:8px;"
+        f"padding:8px 14px;margin:8px 0;font-size:12px;color:#075985;line-height:1.5'>"
+        f"<b>📘 Lógica de la comparación</b><br>"
+        f"• <b>Físico</b> = suma de la última cantidad contada por SKU en todas las "
+        f"ubicaciones de la toma.<br>"
+        f"• <b>Calculado</b> = stock del sistema SOLO en las bodegas marcadas como "
+        f"«contables» ({', '.join(f'<code>{b}</code>' for b in contables)}).<br>"
+        f"• Las bodegas <b>no contables</b> (consignadas en clientes) se listan "
+        f"aparte abajo — su stock es tuyo pero no se puede contar físicamente.<br>"
+        f"• <b>Diferencia</b> = Físico − Calculado. Coincide si |Diff| ≤ {_tol:g}."
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # KPIs
+    _ex   = (_cmp["Coincide"].mean()*100) if len(_cmp) else 0
+    _dif  = int((_cmp["Diferencia"].abs() > _tol).sum())
+    _ok   = int(_cmp["Coincide"].sum())
+    _total_fis = int(_cmp["Cantidad Física"].sum())
+    _total_ct  = int(_cmp["Cantidad Calculada"].sum())
+    _total_cl  = int(_cmp["En Clientes"].sum())
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Exactitud", f"{_ex:.1f}%")
+    m2.metric("Con diferencia", _dif)
+    m3.metric("Coinciden", _ok)
+    m4.metric("SKUs", len(_cmp))
+
+    n1,n2,n3 = st.columns(3)
+    n1.metric("Σ Físico contado", f"{_total_fis:,} u")
+    n2.metric("Σ Calculado contable", f"{_total_ct:,} u")
+    n3.metric("Σ En clientes", f"{_total_cl:,} u",
+              help="Stock del sistema en bodegas consignadas a clientes (no contables)")
+
+    # Filtro de vista
+    _show_mode = st.radio("Mostrar",
+        ["Con diferencia","Todo","Coinciden"],
+        horizontal=True, key="cmp_mode")
+    if _show_mode == "Con diferencia":
+        _cmp_show = _cmp[_cmp["Diferencia"].abs() > _tol].copy()
+    elif _show_mode == "Coinciden":
+        _cmp_show = _cmp[_cmp["Coincide"]].copy()
+    else:
+        _cmp_show = _cmp.copy()
+
+    _cmp_show = _cmp_show[["Código Producto","Nombre Producto",
+                           "Cantidad Calculada","Cantidad Física",
+                           "Diferencia","En Clientes","Coincide"]].reset_index(drop=True)
+    for _c in ("Cantidad Calculada","Cantidad Física","Diferencia","En Clientes"):
+        _cmp_show[_c] = pd.to_numeric(_cmp_show[_c], errors="coerce").fillna(0).astype(int)
+    _cmp_show["Coincide"] = _cmp_show["Coincide"].map({True:"✓", False:"✗"})
+
+    st.dataframe(_cmp_show, use_container_width=True, hide_index=True, height=520,
+                 column_config={
+                     "Código Producto": st.column_config.TextColumn("SKU", width="small"),
+                     "Nombre Producto": st.column_config.TextColumn("Producto"),
+                     "Cantidad Calculada": st.column_config.NumberColumn(
+                         "Sistema (contable)", format="%d",
+                         help=f"Stock en: {', '.join(contables)}"),
+                     "Cantidad Física":    st.column_config.NumberColumn("Físico", format="%d"),
+                     "Diferencia":         st.column_config.NumberColumn("Diferencia", format="%+d"),
+                     "En Clientes":        st.column_config.NumberColumn(
+                         "En clientes", format="%d",
+                         help="Stock en bodegas consignadas (informativo)"),
+                     "Coincide":           st.column_config.TextColumn("OK", width="small"),
+                 })
+    dl3(_cmp_show, "comparacion_toma", "ph")
+
+    # ── Detalle de Consignado en Clientes ──────────────────────
+    st.markdown("---")
+    with st.expander(f"🏪 Stock consignado en clientes ({len(_inv_cl['Bodega'].unique())} bodegas · "
+                     f"{_total_cl:,} u totales) — no se cuenta físicamente"):
+        if _inv_cl.empty:
+            st.caption("No hay stock en bodegas consignadas con los filtros actuales.")
         else:
-            _cmp_show = _cmp.copy()
-        # Formato para mostrar
-        _cmp_show = _cmp_show[["Código Producto","Nombre Producto",
-                               "Cantidad Calculada","Cantidad Física",
-                               "Diferencia","Coincide"]].reset_index(drop=True)
-        for _c in ("Cantidad Calculada","Cantidad Física","Diferencia"):
-            _cmp_show[_c] = pd.to_numeric(_cmp_show[_c], errors="coerce").fillna(0).astype(int)
-        _cmp_show["Coincide"] = _cmp_show["Coincide"].map({True:"✓", False:"✗"})
-        st.dataframe(_cmp_show, use_container_width=True, hide_index=True, height=540,
-                     column_config={
-                         "Código Producto": st.column_config.TextColumn("SKU", width="small"),
-                         "Nombre Producto": st.column_config.TextColumn("Producto"),
-                         "Cantidad Calculada": st.column_config.NumberColumn("Sistema", format="%d"),
-                         "Cantidad Física":    st.column_config.NumberColumn("Físico", format="%d"),
-                         "Diferencia":         st.column_config.NumberColumn("Diferencia", format="%+d"),
-                         "Coincide":           st.column_config.TextColumn("OK", width="small"),
-                     })
-        dl3(_cmp_show, "comparacion_toma", "ph")
+            # Pivot SKU × Bodega de clientes
+            _pv_cl = _inv_cl.pivot_table(
+                index=["Código Producto","Nombre Producto"],
+                columns="Bodega", values="Stock", aggfunc="sum"
+            ).fillna(0).astype(int).reset_index()
+            # Total por SKU
+            _cl_cols = [c for c in _pv_cl.columns
+                        if c not in ("Código Producto","Nombre Producto")]
+            _pv_cl["Σ En clientes"] = _pv_cl[_cl_cols].sum(axis=1)
+            _pv_cl = _pv_cl.sort_values("Σ En clientes", ascending=False)
+            st.dataframe(_pv_cl, use_container_width=True, hide_index=True, height=400,
+                         column_config={
+                             "Código Producto": st.column_config.TextColumn("SKU", width="small"),
+                             "Nombre Producto": st.column_config.TextColumn("Producto"),
+                             "Σ En clientes":   st.column_config.NumberColumn("Σ Total", format="%d"),
+                             **{c: st.column_config.NumberColumn(c, format="%d") for c in _cl_cols},
+                         })
+            st.download_button("📥 Exportar consignado a Excel",
+                to_xl(_pv_cl), "consignado_clientes.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="cons_cl_xl")
 
 
 _perf("before_tab_phy")
