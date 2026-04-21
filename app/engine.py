@@ -226,8 +226,15 @@ class InventoryEngine:
             "BAJA DE INVENTARIO", regex=False, na=False
         )
 
-        df["is_purchase"]        = (typ == "ING") & ref.str.startswith("FAC")
         df["is_customer_return"] = (typ == "ING") & ref.str.startswith("NCT")
+        # Compras: Tipo=ING + (Referencia empieza con FAC) O (Descripción
+        # contiene "FACTURA DE COMPRA" cuando la referencia está vacía —
+        # algunos movimientos del contable dejan la ref en blanco y ponen
+        # el N° de factura en la descripción).
+        df["is_purchase"] = ((typ == "ING") & ~df["is_customer_return"] & (
+            ref.str.startswith("FAC") |
+            desc.str.contains("FACTURA DE COMPRA", regex=False, na=False)
+        ))
         # Excluir bajas de venta y dev.proveedor para que no se cuenten dos veces
         df["is_sale"]            = ((typ == "EGR") & ref.str.startswith("FAC")
                                     & ~df["is_baja_inventory"])

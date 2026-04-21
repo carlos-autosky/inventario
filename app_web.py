@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.3 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.3.1 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.3"
+APP_VERSION = "v4.3.1"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.3":
+if st.session_state.get("_app_version") != "v4.3.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.3"
+    st.session_state["_app_version"] = "v4.3.1"
 
-st.set_page_config(page_title="Inventario v4.3", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.3.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -2944,11 +2944,15 @@ def _render_tab_kdx():
                 desc=raw["Descripción"].fillna("").astype(str).str.upper()
                 # Baja de inventario (EGR + descripción contiene "BAJA DE INVENTARIO")
                 raw["_ib"]=(typ=="EGR") & desc.str.contains("BAJA DE INVENTARIO", regex=False, na=False)
-                raw["_ip"]=(typ=="ING")&ref.str.startswith("FAC")
+                raw["_ic"]=(typ=="ING")&ref.str.startswith("NCT")
+                # Compras: ref FAC o "FACTURA DE COMPRA" en desc (ref vacía)
+                raw["_ip"]=(typ=="ING") & ~raw["_ic"] & (
+                    ref.str.startswith("FAC") |
+                    desc.str.contains("FACTURA DE COMPRA", regex=False, na=False)
+                )
                 # Excluir bajas de venta y dev. proveedor (prioridad)
                 raw["_is"]=(typ=="EGR")&ref.str.startswith("FAC") & ~raw["_ib"]
                 raw["_ir"]=(typ=="EGR")&ref.str.startswith("NCT") & ~raw["_ib"]
-                raw["_ic"]=(typ=="ING")&ref.str.startswith("NCT")
                 raw["_it"]=typ=="TRA"
                 raw=raw.sort_values(["Código Producto","Fecha"]).reset_index(drop=True)
                 hist=raw[raw["Fecha"]<df_ts]
