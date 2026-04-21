@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.2 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.2.1 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.2"
+APP_VERSION = "v4.2.1"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.2":
+if st.session_state.get("_app_version") != "v4.2.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.2"
+    st.session_state["_app_version"] = "v4.2.1"
 
-st.set_page_config(page_title="Inventario v4.2", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.2.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1749,15 +1749,40 @@ def _render_tab_sku():
 
         # Multiselect predictivo con filtro estricto de substring
         _sk_opts_df = df[["Código Producto","Nombre Producto"]].drop_duplicates()
-        _sk_opts_df = _sk_opts_df.sort_values("Nombre Producto")
+        _sk_opts_df = _sk_opts_df.sort_values("Código Producto")
         _sk_labels = [f"{c} — {n}" for c,n in zip(
             _sk_opts_df["Código Producto"].astype(str),
             _sk_opts_df["Nombre Producto"].astype(str))]
-        _sk_sel = st.multiselect("🔍 SKU / Producto", _sk_labels, key="sk_f",
-                                  placeholder="Escribe código o nombre…")
+
+        sk_f1, sk_f2 = st.columns([3, 2])
+        with sk_f1:
+            _sk_sel = st.multiselect("🔍 SKU / Producto", _sk_labels, key="sk_f",
+                                      placeholder="Escribe código o nombre…")
+        with sk_f2:
+            _sort_opts = {
+                "Código ↑":            ("Código Producto",      True),
+                "Código ↓":            ("Código Producto",      False),
+                "Nombre ↑":            ("Nombre Producto",      True),
+                "Nombre ↓":            ("Nombre Producto",      False),
+                "Stock Total ↓":       ("Stock Total",          False),
+                "Ventas ↓":            ("Ventas",               False),
+                "Valor Inventario ↓":  ("Valor Inventario",     False),
+                "Δ vs Stock ↓":        ("Δ vs Stock",           False),
+            }
+            _sort_label = st.selectbox("Ordenar por",
+                                       list(_sort_opts.keys()),
+                                       index=0, key="sk_sort",
+                                       help="Default: Código ascendente (útil para búsqueda por SKU).")
+        _sort_col, _sort_asc = _sort_opts[_sort_label]
+
         if _sk_sel:
             _sk_codes_sel = {s.split(" — ")[0] for s in _sk_sel}
             df = df[df["Código Producto"].astype(str).isin(_sk_codes_sel)]
+
+        # Ordenamiento aplicado a las tablas que se muestran abajo
+        if _sort_col in df.columns:
+            df = df.sort_values(_sort_col, ascending=_sort_asc,
+                                na_position="last").reset_index(drop=True)
 
         # ── Tabla Unidades ────────────────────────────────────────
         # Orden: flujo de entrada/salida | resultado | muestras (info) | cuadre
