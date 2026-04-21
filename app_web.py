@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.3.3 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.4 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.3.3"
+APP_VERSION = "v4.4"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.3.3":
+if st.session_state.get("_app_version") != "v4.4":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.3.3"
+    st.session_state["_app_version"] = "v4.4"
 
-st.set_page_config(page_title="Inventario v4.3.3", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.4", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -158,6 +158,35 @@ def _persist_rapid(df):
 
 # Ubicaciones personalizadas — archivo JSON global compartido entre sesiones
 UBIC_CUSTOM_PATH = os.path.join(_BASE_DIR, "ubicaciones_custom.json")
+FILTROS_PATH     = os.path.join(_BASE_DIR, "filtros_config.json")
+
+# Filtros globales compartidos (SKUs y Bodegas excluidas del análisis)
+# Se persisten a disco para que sobrevivan a refresh y sesión nueva.
+@st.cache_resource
+def _get_shared_filtros():
+    state = {"excluded_skus": set(), "excluded_warehouses": set()}
+    if os.path.exists(FILTROS_PATH):
+        try:
+            import json
+            with open(FILTROS_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            state["excluded_skus"]        = set(data.get("excluded_skus", []))
+            state["excluded_warehouses"]  = set(data.get("excluded_warehouses", []))
+        except Exception:
+            pass
+    return state
+
+def _persist_filtros(excluded_skus, excluded_warehouses):
+    try:
+        import json
+        with _SHARED_WRITE_LOCK:
+            with open(FILTROS_PATH, "w", encoding="utf-8") as f:
+                json.dump({
+                    "excluded_skus":       sorted(list(excluded_skus)),
+                    "excluded_warehouses": sorted(list(excluded_warehouses)),
+                }, f, ensure_ascii=False, indent=2)
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir filtros: {ex}")
 
 @st.cache_resource
 def _get_custom_ubic():
@@ -393,19 +422,25 @@ def _parse_plantilla_toma(path, registered_ubic):
 
 # ── Session state ───────────────────────────────────────────────
 def _init():
-    shared_files = _get_shared_files()
+    shared_files   = _get_shared_files()
+    shared_filtros = _get_shared_filtros()
     defs = {"engine": _get_shared_engine(), "result": None,
             "files_loaded": shared_files["files_loaded"],
             "files_stats":  shared_files["files_stats"],
             "log": [], "dark_mode": False,
-            "excluded_skus": set(), "excl_wh": set()}
+            # Filtros globales persistidos (se cargan de filtros_config.json)
+            "excluded_skus": set(shared_filtros["excluded_skus"]),
+            "excl_wh":       set(shared_filtros["excluded_warehouses"])}
     for k,v in defs.items():
         if k not in st.session_state: st.session_state[k] = v
+    # Propagar filtros al engine al primer init (para analyze correcto)
+    _e = st.session_state.engine
+    _e.excluded_skus        = set(st.session_state.excluded_skus)
+    _e.excluded_warehouses  = set(st.session_state.excl_wh)
     # Si la sesión arranca con datos pre-cargados (el servidor ya los tenía)
     # pero sin cálculo, disparar auto-análisis para que los KPIs aparezcan
     # sin exigir al usuario pulsar "Calcular"
-    if (st.session_state.engine.raw_df is not None
-            and st.session_state.result is None):
+    if (_e.raw_df is not None and st.session_state.result is None):
         st.session_state["_recalc_pending"] = True
 _init()
 eng = st.session_state.engine
@@ -1470,7 +1505,8 @@ with st.sidebar:
                                placeholder="Escribe código o nombre…")
         _prev_excl_s = set(st.session_state.excluded_skus)
         st.session_state.excluded_skus=set(excl_s); eng.excluded_skus=set(excl_s)
-        if _prev_excl_s != set(excl_s):
+        _sku_changed = _prev_excl_s != set(excl_s)
+        if _sku_changed:
             st.session_state["_recalc_pending"] = True
 
         all_wh=eng.get_warehouses()
@@ -1483,8 +1519,18 @@ with st.sidebar:
         # Exclusión GLOBAL: descarta movimientos (origen o destino) en esas bodegas.
         # Afecta KPIs, rotación, kardex, compras — todo el pipeline.
         eng.excluded_warehouses = set(excl_w)
-        if _prev_excl_w != set(excl_w):
+        _wh_changed = _prev_excl_w != set(excl_w)
+        if _wh_changed:
             st.session_state["_recalc_pending"] = True
+
+        # Persistir filtros a disco + cache_resource compartido si cambió algo.
+        # Así sobreviven refresh, nueva sesión y son iguales para todos los clientes.
+        if _sku_changed or _wh_changed:
+            _shared_f = _get_shared_filtros()
+            _shared_f["excluded_skus"]       = set(excl_s)
+            _shared_f["excluded_warehouses"] = set(excl_w)
+            _persist_filtros(set(excl_s), set(excl_w))
+
         st.divider()
 
         st.markdown("### ⚙️ Calcular")
@@ -3459,6 +3505,111 @@ def _render_resumen_fragment():
             to_xl(_hist), "historial_toma_fisica.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True, key="res_hist_xl")
+
+    # ── Backup completo (todo en un ZIP) ────────────────────────
+    with st.expander("💾 Backup completo — todo en un ZIP (recomendado antes de reboot)"):
+        st.caption(
+            "Descarga un ZIP con **historial de toma física + filtros de "
+            "exclusión + ubicaciones custom**. Tras un reboot de Streamlit Cloud "
+            "súbelo aquí para restaurar todo de una vez."
+        )
+        import json, zipfile
+
+        # Construir ZIP en memoria
+        _zip_buf = io.BytesIO()
+        with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_DEFLATED) as _zf:
+            # Historial de toma física (si hay datos)
+            if not rap_df.empty:
+                _hist_bytes = to_xl(rap_df.sort_values("Fecha", ascending=False))
+                _zf.writestr("toma_fisica_rapida.xlsx", _hist_bytes)
+            # Filtros de exclusión
+            _f = _get_shared_filtros()
+            _zf.writestr("filtros_config.json", json.dumps({
+                "excluded_skus":       sorted(list(_f["excluded_skus"])),
+                "excluded_warehouses": sorted(list(_f["excluded_warehouses"])),
+            }, ensure_ascii=False, indent=2))
+            # Ubicaciones custom
+            _c = _get_custom_ubic()
+            _zf.writestr("ubicaciones_custom.json", json.dumps({
+                "ubicaciones": list(_c["list"]),
+            }, ensure_ascii=False, indent=2))
+        _zip_bytes = _zip_buf.getvalue()
+
+        _n_skus_excl = len(_get_shared_filtros()["excluded_skus"])
+        _n_wh_excl   = len(_get_shared_filtros()["excluded_warehouses"])
+        _n_custom    = len(_get_custom_ubic()["list"])
+        _n_hist      = len(rap_df)
+
+        st.markdown(
+            f"**Contenido del backup:**\n\n"
+            f"- 📋 **Historial de toma física**: {_n_hist:,} filas\n"
+            f"- 🚫 **SKUs excluidos**: {_n_skus_excl}\n"
+            f"- 🏪 **Bodegas excluidas**: {_n_wh_excl}\n"
+            f"- 📍 **Ubicaciones custom**: {_n_custom}"
+        )
+
+        _fecha_zip = datetime.now().strftime("%Y%m%d_%H%M")
+        cz1, cz2 = st.columns(2)
+        with cz1:
+            st.download_button(
+                "📥 Descargar backup completo (ZIP)",
+                _zip_bytes,
+                f"backup_autosky_{_fecha_zip}.zip",
+                "application/zip",
+                use_container_width=True, key="res_backup_zip")
+        with cz2:
+            _up_zip = st.file_uploader("Restaurar desde ZIP",
+                                        type=["zip"], key="res_restore_zip",
+                                        label_visibility="collapsed")
+            if _up_zip is not None and st.button(
+                "♻ Restaurar desde ZIP", type="primary",
+                use_container_width=True, key="res_restore_btn"
+            ):
+                try:
+                    _in = zipfile.ZipFile(io.BytesIO(_up_zip.getvalue()))
+                    _names = _in.namelist()
+                    _summary = []
+
+                    # Historial
+                    if "toma_fisica_rapida.xlsx" in _names:
+                        with _in.open("toma_fisica_rapida.xlsx") as _fh:
+                            _df_imp = pd.read_excel(_fh)
+                        rap_state["df"] = _df_imp
+                        _persist_rapid(_df_imp)
+                        _summary.append(f"📋 Historial: {len(_df_imp):,} filas restauradas")
+
+                    # Filtros
+                    if "filtros_config.json" in _names:
+                        _raw = _in.read("filtros_config.json").decode("utf-8")
+                        _data = json.loads(_raw)
+                        _sku_set = set(_data.get("excluded_skus", []))
+                        _wh_set  = set(_data.get("excluded_warehouses", []))
+                        _shared_f = _get_shared_filtros()
+                        _shared_f["excluded_skus"]       = _sku_set
+                        _shared_f["excluded_warehouses"] = _wh_set
+                        _persist_filtros(_sku_set, _wh_set)
+                        st.session_state["excluded_skus"] = _sku_set
+                        st.session_state["excl_wh"]       = _wh_set
+                        _summary.append(f"🚫 Filtros: {len(_sku_set)} SKU + {len(_wh_set)} bodegas")
+
+                    # Ubicaciones custom
+                    if "ubicaciones_custom.json" in _names:
+                        _raw = _in.read("ubicaciones_custom.json").decode("utf-8")
+                        _data = json.loads(_raw)
+                        _lst = list(_data.get("ubicaciones", []))
+                        _c = _get_custom_ubic()
+                        _c["list"] = _lst
+                        _persist_custom_ubic(_lst)
+                        _summary.append(f"📍 Ubicaciones custom: {len(_lst)} restauradas")
+
+                    if _summary:
+                        st.success("✅ Restaurado:\n\n" + "\n".join(f"- {s}" for s in _summary))
+                        log(f"Backup restaurado desde {_up_zip.name}: {'; '.join(_summary)}")
+                        _rerun_frag()
+                    else:
+                        st.warning("El ZIP no contenía ninguno de los archivos esperados.")
+                except Exception as _ex:
+                    st.error(f"Error al restaurar: {_ex}")
 
     # ── Administración: borrar tomas guardadas ──────────────────
     with st.expander("🧹 Administrar datos guardados — borrar tomas"):
