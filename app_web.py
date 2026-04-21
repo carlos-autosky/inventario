@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.3.2 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.3.3 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.3.2"
+APP_VERSION = "v4.3.3"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.3.2":
+if st.session_state.get("_app_version") != "v4.3.3":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.3.2"
+    st.session_state["_app_version"] = "v4.3.3"
 
-st.set_page_config(page_title="Inventario v4.3.2", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.3.3", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -3955,7 +3955,10 @@ def _render_comparacion_fragment():
     _cmp = _cmp.merge(_cons_cl,
                       on=["Código Producto","Nombre Producto"],
                       how="left").fillna(0)
-    _cmp["Diferencia"] = _cmp["Cantidad Física"] - _cmp["Cantidad Calculada"]
+    # Diferencia = Sistema − Físico
+    #   > 0 → FALTANTE (sistema dice que debería haber más de lo contado)
+    #   < 0 → SOBRANTE (hay más físicamente de lo que el sistema dice)
+    _cmp["Diferencia"] = _cmp["Cantidad Calculada"] - _cmp["Cantidad Física"]
     _cmp["Coincide"]   = _cmp["Diferencia"].abs() <= _tol
     _cmp = _cmp.sort_values("Diferencia",
                             key=lambda s: s.abs(), ascending=False)
@@ -3971,7 +3974,10 @@ def _render_comparacion_fragment():
         f"«contables» ({', '.join(f'<code>{b}</code>' for b in contables)}).<br>"
         f"• Las bodegas <b>no contables</b> (consignadas en clientes) se listan "
         f"aparte abajo — su stock es tuyo pero no se puede contar físicamente.<br>"
-        f"• <b>Diferencia</b> = Físico − Calculado. Coincide si |Diff| ≤ {_tol:g}."
+        f"• <b>Diferencia</b> = Sistema − Físico. "
+        f"<b>+</b> = faltante (sistema dice que debería haber más · investigar). "
+        f"<b>−</b> = sobrante (hay más físicamente). "
+        f"Coincide si |Diff| ≤ {_tol:g}."
         f"</div>",
         unsafe_allow_html=True
     )
