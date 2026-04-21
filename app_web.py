@@ -1,6 +1,14 @@
 """
-Sistema de Inventario v3.70 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.1 — Interfaz Web (Streamlit)
 """
+# ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
+import time as _ptime
+_PERF_T0 = _ptime.perf_counter()
+_PERF_CHECKPOINTS = []
+def _perf(label):
+    _PERF_CHECKPOINTS.append((label, _ptime.perf_counter() - _PERF_T0))
+_perf("script_start")
+
 import streamlit as st
 import streamlit.components.v1 as _components
 import tempfile, io, os, sys
@@ -12,9 +20,27 @@ sys.path.insert(0, os.path.dirname(__file__))
 from app.engine import InventoryEngine
 from app.config import PRIMARY_WAREHOUSE
 from app.toma_fisica_module import DEFAULT_LOCATIONS
+_perf("imports_done")
 
-APP_VERSION = "v3.70"
-BUILD_TIME  = "09/04/2026 12:13 GMT-5"
+# Fragment decorator: aisla reruns al bloque decorado (Streamlit 1.37+ estable,
+# 1.33-1.36 experimental, anterior: sin efecto — funciona como rerun global)
+try:
+    _fragment = st.fragment
+except AttributeError:
+    try:
+        _fragment = st.experimental_fragment
+    except AttributeError:
+        def _fragment(fn): return fn
+
+def _rerun_frag():
+    """Rerun sólo del fragment actual (Streamlit 1.37+). Fallback: rerun global."""
+    try:
+        st.rerun(scope="fragment")
+    except Exception:
+        st.rerun()
+
+APP_VERSION = "v4.1"
+BUILD_TIME  = "20/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
 import logging as _logging
@@ -28,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v3.70":
+if st.session_state.get("_app_version") != "v4.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v3.70"
+    st.session_state["_app_version"] = "v4.1"
 
-st.set_page_config(page_title="Inventario v3.70", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -45,7 +71,35 @@ import threading
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONSOLIDADO_PATH = os.path.join(_BASE_DIR, "consolidado.xlsx")
 TOMA_FISICA_PATH = os.path.join(_BASE_DIR, "toma_fisica.xlsx")
+RAPIDA_PATH      = os.path.join(_BASE_DIR, "toma_fisica_rapida.xlsx")
+_PERF_LOG_PATH   = os.path.join(_BASE_DIR, "perf.log")
 _SHARED_WRITE_LOCK = threading.Lock()
+
+@st.cache_resource
+def _get_perf_history():
+    return {"runs": []}
+
+def _perf_flush():
+    if not _PERF_CHECKPOINTS: return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        total_ms = _PERF_CHECKPOINTS[-1][1] * 1000
+        ck_list = []
+        prev = 0.0
+        parts = []
+        for label, t in _PERF_CHECKPOINTS:
+            dt_ms = (t - prev) * 1000
+            ck_list.append((label, round(dt_ms)))
+            parts.append(f"{label}={dt_ms:.0f}")
+            prev = t
+        with open(_PERF_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{ts} TOTAL={total_ms:.0f}ms | {' '.join(parts)}\n")
+        hist = _get_perf_history()
+        hist["runs"].append({"ts": ts, "total_ms": round(total_ms), "ck": ck_list})
+        hist["runs"] = hist["runs"][-30:]
+    except Exception: pass
+_RAPIDA_COLS = ["Fecha","Ubicación","Código Producto","Nombre Producto",
+                "Cantidad Física","Observación"]
 
 @st.cache_resource
 def _get_shared_engine():
@@ -79,6 +133,206 @@ def _persist_physical(df):
     except Exception as ex:
         log(f"⚠ No se pudo persistir toma física: {ex}")
 
+@st.cache_resource
+def _get_shared_rapid():
+    state = {"df": pd.DataFrame(columns=_RAPIDA_COLS)}
+    if os.path.exists(RAPIDA_PATH):
+        try:
+            df = pd.read_excel(RAPIDA_PATH)
+            # Compat: versión previa usaba "Bodega" en lugar de "Ubicación"
+            if "Bodega" in df.columns and "Ubicación" not in df.columns:
+                df = df.rename(columns={"Bodega":"Ubicación"})
+            for c in _RAPIDA_COLS:
+                if c not in df.columns: df[c] = ""
+            state["df"] = df[_RAPIDA_COLS]
+        except Exception:
+            pass
+    return state
+
+def _persist_rapid(df):
+    try:
+        with _SHARED_WRITE_LOCK:
+            df.to_excel(RAPIDA_PATH, index=False, engine="openpyxl")
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir toma rápida: {ex}")
+
+# Ubicaciones personalizadas — archivo JSON global compartido entre sesiones
+UBIC_CUSTOM_PATH = os.path.join(_BASE_DIR, "ubicaciones_custom.json")
+
+@st.cache_resource
+def _get_custom_ubic():
+    state = {"list": []}
+    if os.path.exists(UBIC_CUSTOM_PATH):
+        try:
+            import json
+            with open(UBIC_CUSTOM_PATH, encoding="utf-8") as f:
+                state["list"] = json.load(f).get("ubicaciones", [])
+        except Exception: pass
+    return state
+
+def _persist_custom_ubic(lst):
+    try:
+        import json
+        with _SHARED_WRITE_LOCK:
+            with open(UBIC_CUSTOM_PATH, "w", encoding="utf-8") as f:
+                json.dump({"ubicaciones": list(lst)}, f, ensure_ascii=False, indent=2)
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir ubicaciones: {ex}")
+
+def _get_all_ubic():
+    """Devuelve DEFAULT_LOCATIONS + custom, preservando orden y sin duplicados."""
+    custom = _get_custom_ubic()["list"]
+    seen = set(); result = []
+    for u in list(DEFAULT_LOCATIONS) + list(custom):
+        if u not in seen:
+            result.append(u); seen.add(u)
+    return result
+
+VENTANA_OPTS = {
+    "Últimos 30 días":  30,
+    "Últimos 90 días":  90,
+    "Últimos 180 días": 180,
+    "Último año":       365,
+    "Todo el período":  None,
+    "Personalizado":    "custom",
+}
+
+def _compute_window_sales(r, ventana_label, custom_start=None, custom_end=None):
+    """Calcula ventas por SKU y días de la ventana elegida.
+
+    El consumo diario debe basarse en el ritmo RECIENTE (últimos N días),
+    no en todo el histórico: si creciste 3x, las ventas antiguas diluyen
+    el promedio y subestiman las compras.
+
+    Devuelve: (days, ventas_by_sku, win_min, win_max)
+    """
+    df_f = r.filtered
+    _data_max = df_f["Fecha"].max()
+    _data_min = df_f["Fecha"].min()
+
+    if ventana_label == "Personalizado":
+        win_min = pd.Timestamp(custom_start) if custom_start else _data_min
+        win_max = pd.Timestamp(custom_end)   if custom_end   else _data_max
+    else:
+        n_days = VENTANA_OPTS.get(ventana_label)
+        if n_days is None:
+            win_min = _data_min
+            win_max = _data_max
+        else:
+            win_min = _data_max - pd.Timedelta(days=n_days)
+            win_max = _data_max
+
+    # Clamp dentro del rango de datos
+    if win_min < _data_min: win_min = _data_min
+    if win_max > _data_max: win_max = _data_max
+    if win_min > win_max:   win_min = win_max
+
+    df_win = df_f[(df_f["Fecha"] >= win_min) & (df_f["Fecha"] <= win_max)]
+    typ = df_win["Tipo"].fillna("").astype(str).str.upper()
+    ref = df_win["Referencia"].fillna("").astype(str).str.upper()
+    mask = (typ == "EGR") & ref.str.startswith("FAC")
+    ventas_win = df_win[mask]
+    if ventas_win.empty:
+        ventas_by_sku = {}
+    else:
+        ventas_by_sku = (ventas_win.groupby("Código Producto")["Cantidad"]
+                         .sum().abs().to_dict())
+
+    days = max(int((win_max - win_min).days) + 1, 1)
+    return days, ventas_by_sku, win_min, win_max
+
+def _ubic_sheet_name(ubic):
+    """Reproduce la transformación que hace la plantilla al convertir
+    un nombre de ubicación en nombre de hoja Excel (max 28 chars,
+    ciertos caracteres reemplazados)."""
+    s = str(ubic)[:28]
+    for ch, rp in [("/","-"),("\\","-"),("?",""),("*",""),
+                    ("[",""),("]",""),(":","")]:
+        s = s.replace(ch, rp)
+    return s
+
+def _parse_plantilla_toma(path, registered_ubic):
+    """Parsea un Excel con el formato de la plantilla de toma física.
+
+    Por cada hoja (excepto 'RESUMEN GENERAL'):
+      - Valida que el nombre corresponda a una ubicación registrada.
+      - Lee B2 como fecha de toma (opcional).
+      - Lee filas desde la 4: A=Código, B=Nombre, C=Cantidad, D=Observación.
+      - Ignora celdas vacías o cantidad ≤ 0 (significan "no contado").
+
+    Devuelve:
+      {
+        "valid_sheets": {ubicacion: {"fecha": date|None, "rows": [...]}},
+        "invalid_sheets": [nombres de hoja que no corresponden a ubicación registrada]
+      }
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True)
+
+    # Mapa: nombre_hoja (transformado) -> ubicación real
+    reverse = {_ubic_sheet_name(u): u for u in registered_ubic}
+
+    result = {"valid_sheets": {}, "invalid_sheets": []}
+
+    for sname in wb.sheetnames:
+        if sname.upper() == "RESUMEN GENERAL":
+            continue
+        if sname not in reverse:
+            result["invalid_sheets"].append(sname)
+            continue
+
+        ubic = reverse[sname]
+        ws = wb[sname]
+
+        # Fecha desde B2
+        b2 = ws["B2"].value
+        fecha = None
+        if b2 is not None and str(b2).strip():
+            try:
+                if isinstance(b2, datetime):
+                    fecha = b2.date()
+                elif isinstance(b2, date):
+                    fecha = b2
+                else:
+                    fecha = pd.to_datetime(str(b2), errors="coerce")
+                    fecha = fecha.date() if fecha is not pd.NaT and fecha is not None else None
+            except Exception:
+                fecha = None
+
+        # Filas desde 4
+        rows = []
+        for r in range(4, (ws.max_row or 0) + 1):
+            codigo = ws.cell(r, 1).value
+            if codigo is None: continue
+            _code = str(codigo).strip()
+            if not _code: continue
+            if _code.upper() in ("TOTAL", "TOTAL GENERAL"):
+                break
+
+            nombre = ws.cell(r, 2).value
+            cantidad = ws.cell(r, 3).value
+            obs = ws.cell(r, 4).value
+
+            try:
+                qty = float(cantidad) if cantidad is not None else 0.0
+            except (ValueError, TypeError):
+                qty = 0.0
+
+            # Vacío o 0 = "no contado" → skip
+            if qty <= 0:
+                continue
+
+            rows.append({
+                "codigo":   _code,
+                "nombre":   str(nombre or "").strip(),
+                "cantidad": qty,
+                "obs":      str(obs or "").strip(),
+            })
+
+        result["valid_sheets"][ubic] = {"fecha": fecha, "rows": rows}
+
+    return result
+
 # ── Session state ───────────────────────────────────────────────
 def _init():
     shared_files = _get_shared_files()
@@ -98,6 +352,7 @@ def _init():
 _init()
 eng = st.session_state.engine
 dark = st.session_state.dark_mode
+_perf("session_init")
 
 # ── Tema ────────────────────────────────────────────────────────
 if dark:
@@ -152,21 +407,35 @@ section[data-testid='stSidebar'] .stCheckbox label{
   font-size:10px!important; font-weight:600!important;
   color:var(--text3)!important; text-transform:uppercase; letter-spacing:.06em;
 }
-.kpi-row{display:flex;gap:10px;margin-bottom:10px;}
+.kpi-row{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
 .kpi-card{
   background:var(--surface); border:1px solid var(--border);
-  border-radius:var(--radius); padding:14px 16px; flex:1;
-  position:relative; overflow:hidden; box-shadow:var(--shadow); min-width:0;
+  border-radius:var(--radius); padding:14px 16px;
+  flex:1 1 140px; min-width:0;
+  position:relative; overflow:hidden; box-shadow:var(--shadow);
 }
 .kpi-card::before{
   content:''; position:absolute; top:0; left:0; right:0; height:3px;
   background:var(--accent,var(--sky));
 }
 .kpi-label{font-size:10px;font-weight:600;color:var(--text3);
-  text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;}
+  text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .kpi-value{font-size:21px;font-weight:700;color:var(--text);
-  font-family:'JetBrains Mono',monospace;}
-.kpi-sub{font-size:10px;color:var(--text3);margin-top:3px;}
+  font-family:'JetBrains Mono',monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kpi-sub{font-size:10px;color:var(--text3);margin-top:3px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media (max-width: 640px){
+  .kpi-row{gap:6px;}
+  .kpi-card{flex:1 1 calc(50% - 3px); padding:10px 12px;}
+  .kpi-label{font-size:9px;letter-spacing:.02em;margin-bottom:3px;}
+  .kpi-value{font-size:17px;}
+  .kpi-sub{font-size:9px;}
+}
+@media (max-width: 420px){
+  .kpi-value{font-size:15px;}
+}
 .kpi-card.a{--accent:var(--sky);}
 .kpi-card.s{--accent:var(--green);}
 .kpi-card.w{--accent:var(--amber);}
@@ -224,6 +493,29 @@ section[data-testid='stSidebar'] .stCheckbox label{
 .it thead th:hover{color:var(--sky);}
 .it tbody td{padding:7px 12px;border-bottom:1px solid var(--surface2);color:var(--text);}
 .it .n{text-align:right;font-family:'JetBrains Mono',monospace;}
+/* Variante compacta para Rotación: filas densas, una por SKU (sin wrap) */
+.it.it-rot thead th{padding:4px 6px!important;font-size:9px!important;
+  letter-spacing:.04em;white-space:nowrap;
+  /* Sticky top reforzado para que no desaparezca al scroll vertical */
+  position:sticky!important;top:0!important;
+  background:var(--surface2)!important;
+  z-index:10!important;}
+/* Esquina (Código): sticky top Y left al tiempo, z-index máximo */
+.it.it-rot thead th:first-child{
+  left:0!important;z-index:12!important;}
+/* Nombre: segundo sticky top (sin left), z-index alto */
+.it.it-rot thead th:nth-child(2){z-index:10!important;}
+.it.it-rot tbody td{padding:2px 6px!important;font-size:10px;line-height:1.2;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* Código (col 1) sticky left, fondo opaco, z-index por debajo del header */
+.it.it-rot tbody td:first-child{
+  font-family:'JetBrains Mono',monospace;font-size:10px;
+  position:sticky!important;left:0!important;z-index:4!important;}
+/* Columna Nombre (2da) con ancho flexible y truncado */
+.it.it-rot tbody td.nom{max-width:320px;}
+.it.it-rot tfoot td{padding:4px 6px!important;font-size:10px;}
+.it.it-rot tfoot td:first-child{position:sticky!important;left:0!important;z-index:4!important;}
+.tc.rot-tc{max-height:640px;}
 .it tfoot tr.tot td{background:var(--sky-ll)!important;font-weight:700;
   border-top:2px solid var(--sky-l);color:var(--sky-d);}
 .it tfoot tr.tot td{background:var(--sky-ll)!important;font-weight:700;
@@ -617,6 +909,7 @@ _components.html("""<script>
   setTimeout(scanTables, 2000);
 })();
 </script>""", height=0, scrolling=False)
+_perf("css_js_emitted")
 
 # ── Helpers ─────────────────────────────────────────────────────
 def log(m):
@@ -687,6 +980,24 @@ def dl3(df, name, key):
         pdf=to_pdf(df,name)
         if pdf: st.download_button("📄 PDF",pdf,f"{name}.pdf","application/pdf",key=f"{key}_pdf",use_container_width=True)
         else: st.button("📄 PDF",disabled=True,key=f"{key}_pdfx",use_container_width=True)
+
+def _strict_opts(options, query, format_func=None, keep_selected=None):
+    """Filtra opciones por substring estricto (no fuzzy). Streamlit usa fuzzy
+    por subsecuencia en el dropdown interno (ej: 'AKE' matchea 'FRANK KEMPIN').
+
+    Para evitar esto, si no hay query devuelve [] (más keep_selected) — fuerza
+    al usuario a escribir en el text_input EXTERNO, cuyo filtrado es estricto.
+    Si ya hay query, devuelve los items que realmente contienen ese texto."""
+    fx = format_func if format_func else str
+    if query:
+        ql = query.lower()
+        filt = [o for o in options if ql in fx(o).lower()]
+    else:
+        filt = []  # Sin búsqueda, sin opciones — se obliga a usar el buscador
+    if keep_selected:
+        for c in keep_selected:
+            if c not in filt: filt.append(c)
+    return filt
 
 def pfilt(df, txt, cols=("Código Producto","Nombre Producto")):
     if not txt: return df
@@ -951,6 +1262,7 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
 
 
 # ── Sidebar ─────────────────────────────────────────────────────
+_perf("before_sidebar")
 with st.sidebar:
     ca,cb=st.columns([4,1])
     with ca:
@@ -1085,15 +1397,26 @@ with st.sidebar:
 
     if eng.raw_df is not None:
         st.markdown("### 🚫 Exclusiones globales")
-        all_skus=sorted(eng.raw_df["Código Producto"].dropna().unique().tolist())
-        excl_s=st.multiselect("Excluir SKUs",all_skus,
+        # Mapa código → nombre para búsqueda predictiva por ambos
+        _excl_map = (eng.raw_df[["Código Producto","Nombre Producto"]]
+                     .drop_duplicates().sort_values("Nombre Producto"))
+        _excl_map = dict(zip(_excl_map["Código Producto"].astype(str),
+                             _excl_map["Nombre Producto"].astype(str)))
+        all_skus = list(_excl_map.keys())
+
+        _fmt_sku = lambda s: f"{s} — {_excl_map.get(s, '')}"
+        excl_s=st.multiselect("Excluir SKUs", all_skus,
                                default=list(st.session_state.excluded_skus),
-                               key="es_ms",placeholder="Buscar código...")
+                               key="es_ms",
+                               format_func=_fmt_sku,
+                               placeholder="Escribe código o nombre…")
         st.session_state.excluded_skus=set(excl_s); eng.excluded_skus=set(excl_s)
+
         all_wh=eng.get_warehouses()
-        excl_w=st.multiselect("Excluir Bodegas",all_wh,
+        excl_w=st.multiselect("Excluir Bodegas", all_wh,
                                default=list(st.session_state.excl_wh),
-                               key="ew_ms",placeholder="Buscar bodega...")
+                               key="ew_ms",
+                               placeholder="Escribe para filtrar…")
         st.session_state.excl_wh=set(excl_w)
         st.divider()
 
@@ -1196,16 +1519,22 @@ if r is not None:
     st.markdown("---")
 
 
+_perf("main_kpis_done")
+
 # ── Pestañas ─────────────────────────────────────────────────────
 tabs=st.tabs(["🏪 Inv×Bodega","🔍 Detalle SKU","📊 SKU×Bodega","👥 Muestras",
-              "📈 Período","🔄 Rotación","🧾 Compras","📋 Kardex","🏭 Toma Física","📝 Log"])
-(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_PUR,T_KDX,T_PHY,T_LOG)=tabs
+              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","📝 Log"])
+(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_LOG)=tabs
+_perf("tabs_defined")
 
 excl_s=list(st.session_state.excluded_skus)
 excl_w=list(st.session_state.excl_wh)
 
 # ══ TAB 1 INVENTARIO ════════════════════════════════════════════
-with T_INV:
+@_fragment
+def _render_tab_inv():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if r is None: st.info("Ejecute el análisis.")
     else:
         df_inv=r.inventory_by_warehouse.copy()
@@ -1217,14 +1546,19 @@ with T_INV:
         _all_skus=sorted(df_inv["Código Producto"].dropna().unique().tolist()) if "Código Producto" in df_inv.columns else []
         _all_bods=sorted(df_inv["Bodega"].dropna().unique().tolist()) if "Bodega" in df_inv.columns else []
 
+        # Mapa SKU → nombre para búsqueda rápida
+        _inv_name_map = dict(zip(df_inv["Código Producto"].astype(str),
+                                 df_inv["Nombre Producto"].astype(str))) if "Código Producto" in df_inv.columns else {}
+        _inv_fmt = lambda s: f"{s} — {_inv_name_map.get(s, '')}" if _inv_name_map.get(s) else s
+
         fc1,fc2,fc3,fc4=st.columns([4,4,1,1])
         with fc1:
-            sel_skus=st.multiselect("🔍 SKU / Producto",_all_skus,
-                key="i_skus",placeholder="Todos los SKUs…",
-                format_func=lambda s: f"{s} — {df_inv[df_inv['Código Producto']==s]['Nombre Producto'].iloc[0]}" if len(df_inv[df_inv['Código Producto']==s])>0 else s)
+            sel_skus=st.multiselect("🔍 SKU / Producto", _all_skus,
+                key="i_skus", placeholder="Escribe código o nombre…",
+                format_func=_inv_fmt)
         with fc2:
-            sel_bods=st.multiselect("🏪 Bodega",_all_bods,
-                key="i_bods",placeholder="Todas las bodegas…")
+            sel_bods=st.multiselect("🏪 Bodega", _all_bods,
+                key="i_bods", placeholder="Escribe para filtrar…")
         with fc3:
             st.markdown("")
             stk_only=st.checkbox("Solo con stock",True,key="i_s")
@@ -1325,8 +1659,14 @@ with T_INV:
                   groups=_groups if len(_bodegas)>1 else None)
         dl3(df,"inventario_bodega","inv")
 
+with T_INV:
+    _render_tab_inv()
+
 # ══ TAB 2 DETALLE SKU ═══════════════════════════════════════════
-with T_SKU:
+@_fragment
+def _render_tab_sku():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if r is None: st.info("Ejecute el análisis.")
     else:
         df=r.sku_summary.copy()
@@ -1372,8 +1712,17 @@ with T_SKU:
         ).astype(int)
         df["Δ vs Stock"] = (df["✓ Cuadre"] - _safe(df,"Stock Total")).astype(int)
 
-        flt=st.text_input("🔍 Filtrar","",key="sk_f",placeholder="Código o nombre...")
-        df=pfilt(df,flt)
+        # Multiselect predictivo con filtro estricto de substring
+        _sk_opts_df = df[["Código Producto","Nombre Producto"]].drop_duplicates()
+        _sk_opts_df = _sk_opts_df.sort_values("Nombre Producto")
+        _sk_labels = [f"{c} — {n}" for c,n in zip(
+            _sk_opts_df["Código Producto"].astype(str),
+            _sk_opts_df["Nombre Producto"].astype(str))]
+        _sk_sel = st.multiselect("🔍 SKU / Producto", _sk_labels, key="sk_f",
+                                  placeholder="Escribe código o nombre…")
+        if _sk_sel:
+            _sk_codes_sel = {s.split(" — ")[0] for s in _sk_sel}
+            df = df[df["Código Producto"].astype(str).isin(_sk_codes_sel)]
 
         # ── Tabla Unidades ────────────────────────────────────────
         # Orden: flujo de entrada/salida | resultado | muestras (info) | cuadre
@@ -1408,8 +1757,14 @@ with T_SKU:
 
         dl3(df,"detalle_sku","sku")
 
+with T_SKU:
+    _render_tab_sku()
+
 # ══ TAB 3 SKU×BODEGA ════════════════════════════════════════════
-with T_PIV:
+@_fragment
+def _render_tab_piv():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if r is None: st.info("Ejecute el análisis.")
     else:
         df=r.inventory_by_warehouse.copy()
@@ -1417,11 +1772,15 @@ with T_PIV:
 
         # Filtros
         _pv_skus=sorted(df["Código Producto"].dropna().unique().tolist()) if "Código Producto" in df.columns else []
+        # Mapa para búsqueda predictiva
+        _pv_name_map = dict(zip(df["Código Producto"].astype(str),
+                                df["Nombre Producto"].astype(str))) if "Código Producto" in df.columns else {}
+        _pv_fmt = lambda s: f"{s} — {_pv_name_map.get(s, '')}" if _pv_name_map.get(s) else s
+
         pc1,pc2,pc3=st.columns([5,1,1])
         with pc1:
-            sel_pv=st.multiselect("🔍 SKU",_pv_skus,key="pv_skus",
-                placeholder="Todos los SKUs…",
-                format_func=lambda s: f"{s} — {df[df['Código Producto']==s]['Nombre Producto'].iloc[0]}" if len(df[df['Código Producto']==s])>0 else s)
+            sel_pv=st.multiselect("🔍 SKU", _pv_skus, key="pv_skus",
+                placeholder="Escribe código o nombre…", format_func=_pv_fmt)
         with pc2:
             st.markdown("")
             excl_bp=st.checkbox("Excluir Bodega Ppal",True,key="pv_e")
@@ -1561,8 +1920,14 @@ with T_PIV:
             dl3(pv,"sku_x_bodega","piv")
         except Exception as e: st.error(str(e))
 
+with T_PIV:
+    _render_tab_piv()
+
 # ══ TAB 4 MUESTRAS ══════════════════════════════════════════════
-with T_SAM:
+@_fragment
+def _render_tab_sam():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if r is None: st.info("Ejecute el análisis.")
     else:
         _s1,_s2=st.tabs(["👥 Resumen por Cliente","📋 Movimientos TRA"])
@@ -1839,8 +2204,14 @@ with T_SAM:
                     _exp_df=_t[[c for c in _exp_c if c in _t.columns]].rename(columns={"Fecha_str":"Fecha","Código":"N° Registro"})
                     dl3(_exp_df,"muestras_tra","tra_exp")
 
+with T_SAM:
+    _render_tab_sam()
+
 # ══ TAB 5 ANÁLISIS PERÍODO ══════════════════════════════════════
-with T_ANA:
+@_fragment
+def _render_tab_ana():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if eng.raw_df is None: st.info("Cargue un archivo.")
     else:
         c1,c2,c3=st.columns([2,2,1])
@@ -1897,50 +2268,106 @@ with T_ANA:
                     with b: st.bar_chart(t10r.set_index("Código")["Rentabilidad"])
                     dl3(t10r,"top10_rentabilidad","ar")
 
+with T_ANA:
+    _render_tab_ana()
+
 # ══ TAB 6 ROTACIÓN ══════════════════════════════════════════════
-with T_ROT:
+@_fragment
+def _render_tab_rot():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if r is None: st.info("Ejecute el análisis.")
     else:
-        c1,c2,c3,c4=st.columns([2,2,2,3])
-        lt_m=c1.number_input("🚢 Marítimo(d)",1,180,45,key="rm")
-        lt_a=c2.number_input("✈ Aéreo(d)",1,60,15,key="ra")
-        saf=c3.number_input("Stock Seg.(d)",0,60,15,key="rs")
-        flt_r=c4.text_input("🔍 Filtrar SKU","",key="rf",placeholder="Código o nombre...")
+        c1,c2,c3,c4,c5=st.columns([2,2,2,2,3])
+        lt_m=c1.number_input("🚢 Marítimo(d)",1,365,45,key="rm")
+        lt_a=c2.number_input("✈ Aéreo(d)",1,180,15,key="ra")
+        saf=c3.number_input("Stock Seg.(d)",0,180,15,key="rs")
+        cob=c4.number_input("🎯 Cobertura(d)",1,730,60,key="rcob",
+                            help="Días totales de cobertura deseados. Sug.Cob. "
+                                 "= Consumo_diario × Cobertura − Stock_actual.")
+        flt_r=c5.text_input("🔍 Filtrar SKU","",key="rf",placeholder="Código o nombre...")
+
+        # ── Ventana para el cálculo del consumo ─────────────────────
+        vc1, vc2, vc3 = st.columns([2, 2, 2])
+        with vc1:
+            ventana = st.selectbox(
+                "📅 Ventana consumo",
+                list(VENTANA_OPTS.keys()), index=1,
+                key="rc_ventana",
+                help="Período para calcular el consumo promedio. Si la empresa "
+                     "ha crecido, usar Últimos 90d es más realista que Todo el período.",
+            )
+        _cus_s = _cus_e = None
+        if ventana == "Personalizado":
+            _dmin = r.filtered["Fecha"].min()
+            _dmax = r.filtered["Fecha"].max()
+            with vc2:
+                _cus_s = st.date_input("Desde", value=(_dmax - pd.Timedelta(days=90)).date(),
+                                        format="DD/MM/YYYY", key="rc_win_s")
+            with vc3:
+                _cus_e = st.date_input("Hasta", value=_dmax.date(),
+                                        format="DD/MM/YYYY", key="rc_win_e")
+
         calc_r=st.button("▶ Calcular Rotación",type="primary",key="rc")
         if calc_r:
             sku=r.sku_summary.copy()
             if excl_s: sku=sku[~sku["Código Producto"].isin(excl_s)]
-            df_f=r.filtered
-            days=max(int((df_f["Fecha"].max()-df_f["Fecha"].min()).days)+1,1)
+
+            # Ventas por SKU SOLO en la ventana seleccionada
+            days, _ventas_win, _win_min, _win_max = _compute_window_sales(
+                r, ventana, custom_start=_cus_s, custom_end=_cus_e)
+            st.session_state["_rc_win_info"] = {
+                "label": ventana, "days": days,
+                "min": _win_min, "max": _win_max,
+                "n_skus_con_ventas": len(_ventas_win),
+            }
             def make_rot(lt):
                 rows=[]
                 for _,row in sku.iterrows():
                     cod=row["Código Producto"]; nom=row["Nombre Producto"]
-                    stk=max(0.0,float(row.get("Stock Disponible",0))); vtas=float(row.get("Ventas",0))
-                    cons=vtas/days; rot=vtas/stk if stk>0 else(999 if vtas>0 else 0)
+                    stk=max(0.0,float(row.get("Stock Disponible",0)))
+                    vtas=float(_ventas_win.get(cod, 0))
+                    # Costo promedio y valores $
+                    _comp_u = float(row.get("Compras", 0) or 0)
+                    _val_comp = float(row.get("Valor Compras", row.get("Valor_Compras", 0)) or 0)
+                    costo_prom = (_val_comp / _comp_u) if _comp_u > 0 else 0.0
+                    val_stock  = stk * costo_prom
+                    cogs_aprox = vtas * costo_prom
+                    cons=vtas/days
+                    rot_u=vtas/stk if stk>0 else(999 if vtas>0 else 0)
+                    rot_d=cogs_aprox/val_stock if val_stock>0 else 0.0
                     dinv=stk/cons if cons>0 else(0 if stk==0 else 9999)
-                    sug=max(0.0,cons*(lt+saf)-stk); pr=cons*lt
+                    sug_lt=max(0.0,cons*(lt+saf)-stk)
+                    sug_cob=max(0.0,cons*cob-stk)
+                    pr=cons*lt
                     if cons>0 and stk==0: alrt="SIN STOCK"
+                    elif cons>0 and rot_u>2 and dinv<lt: alrt="BEST-SELLER"
                     elif cons>0 and dinv<lt: alrt="CRÍTICO"
                     elif cons>0 and dinv<lt+saf: alrt="BAJO"
                     elif cons==0: alrt="SIN VENTA"
                     else: alrt="OK"
                     rows.append({"Código":cod,"Nombre":nom,"Stock":int(stk),"Ventas(u)":int(vtas),
                                  "Cons/día":round(cons,3),"P.Reorden":round(pr,1),
-                                 "Días Inv.":round(dinv,1),"Rotación":round(rot,2),
-                                 "Sug.Compra":int(round(sug)),"Estado":alrt})
-                order={"SIN STOCK":0,"CRÍTICO":1,"BAJO":2,"OK":3,"SIN VENTA":4}
-                rows.sort(key=lambda x:(order.get(x["Estado"],5),-x["Ventas(u)"]))
+                                 "Días Inv.":round(dinv,1),
+                                 "Rotación":round(rot_u,2),
+                                 "Rotación $":round(rot_d,2),
+                                 "Sug.LT+SS":int(round(sug_lt)),
+                                 "Sug.Cob.":int(round(sug_cob)),
+                                 "Estado":alrt})
+                order={"SIN STOCK":0,"BEST-SELLER":1,"CRÍTICO":2,"BAJO":3,"OK":4,"SIN VENTA":5}
+                rows.sort(key=lambda x:(order.get(x["Estado"],6),-x["Ventas(u)"]))
                 return pd.DataFrame(rows)
             st.session_state["rot_m"]=make_rot(lt_m)
             st.session_state["rot_a"]=make_rot(lt_a)
 
-        CK={"SIN STOCK":"#fca5a5","CRÍTICO":"#fca5a5","BAJO":"#fde68a","OK":"#bbf7d0","SIN VENTA":"#e2e8f0"}
-        nr=["Stock","Ventas(u)","Cons/día","P.Reorden","Días Inv.","Rotación","Sug.Compra"]
+        CK={"SIN STOCK":"#fca5a5","BEST-SELLER":"#fed7aa","CRÍTICO":"#fca5a5",
+            "BAJO":"#fde68a","OK":"#bbf7d0","SIN VENTA":"#e2e8f0"}
+        nr=["Stock","Ventas(u)","Cons/día","P.Reorden","Días Inv.",
+            "Rotación","Rotación $","Sug.LT+SS","Sug.Cob."]
 
         def rot_table(df_r, uid):
             hdrs="".join(f"<th class='{'n' if c in nr else ''}'>{c}</th>" for c in df_r.columns)
-            rows=""; tot=0
+            rows=""; tot_lt=0; tot_cob=0
             for _,row in df_r.iterrows():
                 cells=""
                 for c in df_r.columns:
@@ -1950,42 +2377,314 @@ with T_ROT:
                         cells+=f"<td style='background:{bg};color:#111;font-weight:700'>{disp}</td>"
                     elif c in nr:
                         cells+=f"<td class='n'>{disp}</td>"
-                        if c=="Sug.Compra":
-                            try: tot+=int(v)
+                        if c=="Sug.LT+SS":
+                            try: tot_lt+=int(v)
                             except: pass
+                        elif c=="Sug.Cob.":
+                            try: tot_cob+=int(v)
+                            except: pass
+                    elif c=="Nombre":
+                        # Truncar nombre largo con tooltip (ver completo al hover)
+                        _full = disp.replace('"','&quot;').replace('<','&lt;').replace('>','&gt;')
+                        _disp = disp if len(disp) <= 50 else disp[:47] + "…"
+                        cells+=f'<td class="nom" title="{_full}">{_disp}</td>'
                     else: cells+=f"<td>{disp}</td>"
                 rows+=f"<tr>{cells}</tr>"
-            tcells="".join(f"<td class='n'>{tot:,}</td>" if c=="Sug.Compra" else(f"<td><b>TOTAL</b></td>" if i==0 else "<td></td>") for i,c in enumerate(df_r.columns))
+            def _tot_cell(c, i):
+                if c=="Sug.LT+SS": return f"<td class='n'>{tot_lt:,}</td>"
+                if c=="Sug.Cob.":  return f"<td class='n'>{tot_cob:,}</td>"
+                if i==0: return "<td><b>TOTAL</b></td>"
+                return "<td></td>"
+            tcells="".join(_tot_cell(c, i) for i,c in enumerate(df_r.columns))
             return f"""<div class="zb">
   <button onclick="var t=document.getElementById('t_{uid}');t.style.fontSize=Math.max(8,parseFloat(getComputedStyle(t).fontSize)-1)+'px'">−</button>
   <button onclick="var t=document.getElementById('t_{uid}');t.style.fontSize=Math.min(20,parseFloat(getComputedStyle(t).fontSize)+1)+'px'">+</button>
   <button onclick="document.getElementById('t_{uid}').style.fontSize='12px'">↺</button>
-  <span style="color:{MUTED};font-size:10px">{len(df_r):,} SKUs | ⚠️ {len(df_r[df_r['Estado'].isin(['SIN STOCK','CRÍTICO'])])} críticos</span>
+  <span style="color:{MUTED};font-size:10px">{len(df_r):,} SKUs | ⚠️ {len(df_r[df_r['Estado'].isin(['SIN STOCK','CRÍTICO','BEST-SELLER'])])} críticos</span>
 </div>
-<div class="tc"><table class="it" id="t_{uid}">
+<div class="tc rot-tc"><table class="it it-rot" id="t_{uid}">
 <thead><tr>{hdrs}</tr></thead><tbody>{rows}</tbody>
 <tfoot><tr class="tot">{tcells}</tr></tfoot>
 </table></div>"""
 
         if "rot_m" in st.session_state:
+            _wi = st.session_state.get("_rc_win_info", {})
+            if _wi:
+                st.info(
+                    f"📅 **Ventana de consumo**: {_wi['label']} · "
+                    f"{_wi['min'].strftime('%d/%m/%Y')} → {_wi['max'].strftime('%d/%m/%Y')} "
+                    f"({_wi['days']} días) · "
+                    f"{_wi['n_skus_con_ventas']:,} SKUs con ventas en la ventana."
+                )
             s1,s2=st.tabs(["🚢 Marítimo","✈ Aéreo"])
             for tab_r,key,lbl in [(s1,"rot_m","Marítimo"),(s2,"rot_a","Aéreo")]:
                 with tab_r:
                     df_r=pfilt(st.session_state[key],flt_r,cols=("Código","Nombre"))
                     st.markdown(rot_table(df_r,f"rot_{lbl}"),unsafe_allow_html=True)
+                    with st.expander("ℹ Leyenda — qué significa cada columna y cada estado"):
+                        st.markdown("""
+**Columnas de la tabla**
+
+| Columna | Qué es | Cómo se calcula |
+|---|---|---|
+| **Código / Nombre** | Identificación del producto | — |
+| **Stock** | Unidades disponibles hoy | Del análisis global |
+| **Ventas (u)** | Unidades vendidas en la ventana elegida | Σ EGR FAC en la ventana |
+| **Cons/día** | Ritmo actual de consumo | Ventas ÷ Días de la ventana |
+| **P. Reorden** | Nivel de stock al que debes disparar una compra para que llegue justo antes de agotarse | Cons/día × Lead time |
+| **Días Inv.** | Cuántos días te alcanza el stock al ritmo actual | Stock ÷ Cons/día |
+| **Rotación** | Veces que rotas el stock en la ventana | Ventas ÷ Stock |
+| **Rotación $** | Lo mismo pero en dinero (indicador financiero) | COGS ÷ Valor_stock |
+| **Sug. LT+SS** | Compra para cubrir Lead time + Stock Seguridad | max(0, Cons/día × (LT+SS) − Stock) |
+| **Sug. Cob.** | Compra para alcanzar la Cobertura objetivo (días) | max(0, Cons/día × Cobertura − Stock) |
+| **Estado** | Clasificación por urgencia (ver abajo) | — |
+
+---
+
+**Estados — por qué se asigna cada uno**
+
+| Estado | Significado | Regla que lo activa |
+|---|---|---|
+| 🔴 **SIN STOCK** | Hubo ventas pero el stock quedó en 0. Pierdes ventas ahora mismo. | `Ventas > 0` **AND** `Stock = 0` |
+| 🔥 **BEST-SELLER** | Producto de alta demanda en riesgo de quiebre. Urgente reponer. | `Rotación > 2×` **AND** `Días Inv. < Lead time` |
+| 🔴 **CRÍTICO** | No alcanzas a sobrevivir el tiempo de entrega si pides hoy. | `Días Inv. < Lead time` |
+| 🟡 **BAJO** | Cubres el lead time pero no el stock de seguridad. Pide pronto. | `Días Inv. < Lead time + Stock Seguridad` |
+| 🟢 **OK** | Stock suficiente para cubrir lead time + seguridad. Tranquilo. | `Días Inv. ≥ Lead time + Stock Seguridad` |
+| ⚪ **SIN VENTA** | No hubo ventas en la ventana. Puede ser estacional o descontinuado. | `Ventas = 0` en la ventana |
+
+**Tip**: si un producto aparece como 🔥 BEST-SELLER, **prioriza el aéreo** aunque sea más caro — el costo del quiebre supera al flete extra.
+                        """)
                     dl3(df_r,f"rotacion_{lbl.lower()}",f"rot_{lbl}")
 
+with T_ROT:
+    _render_tab_rot()
+
+# ══ TAB: CÁLCULOS PASO A PASO ═══════════════════════════════════
+@_fragment
+def _render_tab_cal():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
+    if r is None or eng.raw_df is None:
+        st.info("Ejecute el análisis primero (sidebar → Calcular).")
+        return
+
+    st.markdown("### 📐 Cálculos de Rotación y Compras — paso a paso")
+    st.caption(
+        "Elige un SKU y ajusta los parámetros. La tabla muestra cómo se "
+        "obtiene cada valor, fórmula por fórmula."
+    )
+
+    # Selector de SKU (predictivo con format_func nativo)
+    _opts = (eng.raw_df[["Código Producto","Nombre Producto"]]
+             .drop_duplicates().sort_values("Nombre Producto"))
+    _codes = _opts["Código Producto"].astype(str).tolist()
+    _names = _opts["Nombre Producto"].astype(str).tolist()
+    _labels = [f"{c} — {n}" for c,n in zip(_codes, _names)]
+    if not _labels:
+        st.warning("No hay SKUs disponibles.")
+        return
+
+    cs1, cs2 = st.columns([3, 2])
+    with cs1:
+        sel_label = st.selectbox("🔍 SKU a analizar", _labels, key="cal_sku",
+                                  placeholder="Escribe código o nombre…")
+    sel_idx = _labels.index(sel_label) if sel_label in _labels else 0
+    sel_code = _codes[sel_idx]; sel_name = _names[sel_idx]
+
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        lt = st.number_input("🚢/✈ Lead time (d)", 1, 365, value=45, key="cal_lt",
+                              help="Tiempo en días desde que pides hasta que recibes.")
+    with p2:
+        saf = st.number_input("🛡 Stock seguridad (d)", 0, 180, value=15, key="cal_saf",
+                               help="Buffer en días contra variabilidad o demora.")
+    with p3:
+        cob = st.number_input("🎯 Cobertura objetivo (d)", 1, 730, value=60, key="cal_cob",
+                               help="Cuántos días de demanda quieres tener cubiertos.")
+
+    # ── Ventana para el consumo ──
+    vc1, vc2, vc3 = st.columns([2, 2, 2])
+    with vc1:
+        ventana = st.selectbox(
+            "📅 Ventana consumo",
+            list(VENTANA_OPTS.keys()), index=1,
+            key="cal_ventana",
+            help="Período para consumo promedio. 'Últimos 90 días' es estándar "
+                 "en retail; evita diluir el ritmo actual con ventas antiguas.",
+        )
+    _cus_s = _cus_e = None
+    if ventana == "Personalizado":
+        _dmin = r.filtered["Fecha"].min()
+        _dmax = r.filtered["Fecha"].max()
+        with vc2:
+            _cus_s = st.date_input("Desde",
+                value=(_dmax - pd.Timedelta(days=90)).date(),
+                format="DD/MM/YYYY", key="cal_win_s")
+        with vc3:
+            _cus_e = st.date_input("Hasta", value=_dmax.date(),
+                format="DD/MM/YYYY", key="cal_win_e")
+
+    # ── Datos del SKU ──
+    sku_sel = r.sku_summary[r.sku_summary["Código Producto"] == sel_code]
+    if sku_sel.empty:
+        st.warning(
+            f"El SKU **{sel_code}** no aparece en el análisis actual "
+            "(puede estar excluido o sin movimientos en el período)."
+        )
+        return
+    row = sku_sel.iloc[0]
+
+    # Ventas y días calculados desde la ventana (NO del histórico completo)
+    days, _ventas_win, _win_min, _win_max = _compute_window_sales(
+        r, ventana, custom_start=_cus_s, custom_end=_cus_e)
+
+    stk   = max(0.0, float(row.get("Stock Disponible", 0)))
+    vtas  = float(_ventas_win.get(sel_code, 0))
+    comp_u= float(row.get("Compras", 0) or 0)
+    val_c = float(row.get("Valor Compras", row.get("Valor_Compras", 0)) or 0)
+    costo = (val_c / comp_u) if comp_u > 0 else 0.0
+    val_stk  = stk * costo
+    cogs_apx = vtas * costo
+
+    cons    = vtas / days if days else 0
+    rot_u   = (vtas / stk) if stk > 0 else (999 if vtas > 0 else 0)
+    rot_d   = (cogs_apx / val_stk) if val_stk > 0 else 0.0
+    dinv_p  = (stk / cons) if cons > 0 else (0 if stk == 0 else 9999)
+    dinv_a  = (365 / rot_u) if (0 < rot_u < 999) else (9999 if rot_u == 0 else 0)
+    dem_lt  = cons * lt
+    ss_u    = cons * saf
+    reord   = dem_lt + ss_u
+    nec_cob = cons * cob
+    sug_cob = max(0.0, nec_cob - stk)
+    sug_lt  = max(0.0, cons * (lt + saf) - stk)
+
+    # Alerta
+    if cons > 0 and stk == 0:
+        alerta = "🔴 SIN STOCK"
+    elif cons > 0 and rot_u > 2 and dinv_p < lt:
+        alerta = "🔥 BEST-SELLER EN RIESGO"
+    elif cons > 0 and dinv_p < lt:
+        alerta = "🔴 CRÍTICO"
+    elif cons > 0 and dinv_p < lt + saf:
+        alerta = "🟡 BAJO"
+    elif cons == 0:
+        alerta = "⚪ SIN VENTA"
+    else:
+        alerta = "🟢 OK"
+
+    st.markdown(f"#### {sel_name}  ·  `{sel_code}`")
+    st.caption(
+        f"📅 **Ventana de consumo**: {ventana} · "
+        f"{_win_min.strftime('%d/%m/%Y')} → {_win_max.strftime('%d/%m/%Y')} ({days} días)"
+    )
+
+    # ── Tabla paso a paso ──
+    pasos = [
+        ("1",  "Días de la ventana",      "fecha_fin − fecha_inicio + 1",     f"{days:,} d"),
+        ("2",  "Stock actual",             "del análisis (hoy)",              f"{int(stk):,} u"),
+        ("3",  "Ventas en la ventana",     "Σ unidades EGR FAC en ventana",   f"{int(vtas):,} u"),
+        ("4",  "Compras del período",      "Σ unidades ING FAC",              f"{int(comp_u):,} u"),
+        ("5",  "Costo promedio unit.",     "Valor_Compras / Compras",         f"${costo:,.2f}"),
+        ("6",  "Valor del stock",          "Stock × Costo_prom",              f"${val_stk:,.2f}"),
+        ("7",  "COGS aprox.",              "Ventas_u × Costo_prom",           f"${cogs_apx:,.2f}"),
+        ("8",  "Consumo diario",           "Ventas / Días_período",           f"{cons:.2f} u/día"),
+        ("9",  "Rotación (unidades)",      "Ventas / Stock",                  f"{rot_u:.2f}×"),
+        ("10", "Rotación ($)",             "COGS / Valor_stock",              f"{rot_d:.2f}×"),
+        ("11", "Días inv. (período)",      "Stock / Consumo_diario",          f"{dinv_p:.1f} d"),
+        ("12", "Días inv. (anualizado)",   "365 / Rotación_u",                f"{dinv_a:.1f} d"),
+        ("13", "Demanda en Lead time",     f"Cons × LT ({lt}d)",              f"{dem_lt:.1f} u"),
+        ("14", "Stock de seguridad",       f"Cons × SS ({saf}d)",             f"{ss_u:.1f} u"),
+        ("15", "Punto de reorden",         "Demanda_LT + SS",                 f"{reord:.1f} u"),
+        ("16", f"Necesidad para {cob}d",   "Cons × Cobertura",                f"{nec_cob:.1f} u"),
+        ("17", "Sug. compra (cobertura)",  "max(0, Necesidad − Stock)",       f"{int(round(sug_cob)):,} u"),
+        ("18", "Sug. compra (LT+SS)",      "max(0, Cons×(LT+SS) − Stock)",    f"{int(round(sug_lt)):,} u"),
+        ("19", "Estado / Alerta",          "evaluación de reglas",            alerta),
+    ]
+    cal_df = pd.DataFrame(pasos, columns=["#", "Variable", "Fórmula", "Valor"])
+    st.dataframe(cal_df, use_container_width=True, hide_index=True, height=560,
+                 column_config={
+                     "#":        st.column_config.TextColumn("Paso", width="small"),
+                     "Variable": st.column_config.TextColumn("Variable"),
+                     "Fórmula":  st.column_config.TextColumn("Fórmula"),
+                     "Valor":    st.column_config.TextColumn("Valor", width="medium"),
+                 })
+
+    # ── Interpretación narrativa ──
+    st.markdown("#### 📝 Interpretación")
+    lines = []
+    if cons == 0:
+        lines.append("Este SKU **no tuvo ventas** en el período. Revisa si está "
+                     "descontinuado, fuera de temporada o si el filtro de fechas excluye ventas.")
+    else:
+        lines.append(
+            f"- Vendiste **{int(vtas):,} u** en **{days} días** → consumo diario "
+            f"promedio **{cons:.2f} u/día**."
+        )
+        lines.append(
+            f"- Stock actual: **{int(stk):,} u** (valor **${val_stk:,.2f}** al "
+            f"costo promedio **${costo:,.2f}**)."
+        )
+        lines.append(
+            f"- Al ritmo actual te alcanza para **{dinv_p:.0f} días**. "
+            f"Rotación del período: **{rot_u:.2f}×** "
+            f"(anualizado: 1 rotación cada {dinv_a:.0f}d)."
+        )
+        lines.append(
+            f"- Demanda durante los **{lt} días de lead time**: {dem_lt:.0f} u. "
+            f"Punto de reorden (incluye {saf}d de seguridad): **{reord:.0f} u**."
+        )
+        if sug_cob > 0:
+            lines.append(
+                f"- Para cubrir **{cob} días** necesitas **{int(round(sug_cob)):,} u** "
+                f"(ya tienes {int(stk):,})."
+            )
+        else:
+            lines.append(
+                f"- Tu stock actual cubre **más de {cob} días**. No hace falta comprar."
+            )
+        if dinv_p < lt:
+            lines.append(
+                f"- ⚠ Tu lead time ({lt}d) es **mayor** a los días de stock que te quedan "
+                f"({dinv_p:.0f}d). Si pides hoy **te quedarás sin stock** antes de que llegue."
+            )
+        elif dinv_p < lt + saf:
+            lines.append(
+                f"- ⚠ Estás apenas cubriendo lead time + seguridad. Pide **pronto**."
+            )
+    st.markdown("\n".join(lines))
+
+    # Export del cálculo
+    st.download_button("📥 Exportar cálculo a Excel",
+        to_xl(cal_df),
+        f"calculo_{sel_code}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="cal_xl", use_container_width=True)
+
+with T_CAL:
+    _render_tab_cal()
+
 # ══ TAB 7 COMPRAS ═══════════════════════════════════════════════
-with T_PUR:
+@_fragment
+def _render_tab_pur():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if eng.raw_df is None: st.info("Cargue un archivo.")
     else:
-        flt=st.text_input("🔍 Filtrar","",key="pu_f",placeholder="Código o nombre...")
+        # Multiselect predictivo con filtro estricto
+        _pu_opts = eng.raw_df[["Código Producto","Nombre Producto"]].drop_duplicates()
+        _pu_opts = _pu_opts.sort_values("Nombre Producto")
+        _pu_labels = [f"{c} — {n}" for c,n in zip(
+            _pu_opts["Código Producto"].astype(str), _pu_opts["Nombre Producto"].astype(str))]
+        _pu_sel = st.multiselect("🔍 SKU / Producto", _pu_labels, key="pu_f",
+                                  placeholder="Escribe código o nombre…")
         df=eng.raw_df.copy()
         if excl_s: df=df[~df["Código Producto"].isin(excl_s)]
         ref=df["Referencia"].fillna("").astype(str).str.upper()
         typ=df["Tipo"].fillna("").astype(str).str.upper()
         cdf=df[(typ=="ING")&ref.str.startswith("FAC")].copy()
-        cdf=pfilt(cdf,flt)
+        if _pu_sel:
+            _pu_codes_sel = {s.split(" — ")[0] for s in _pu_sel}
+            cdf = cdf[cdf["Código Producto"].astype(str).isin(_pu_codes_sel)]
         if cdf.empty: st.warning("Sin compras.")
         else:
             cdf=cdf.sort_values(["Código Producto","Fecha"])
@@ -2144,16 +2843,29 @@ with T_PUR:
             _components.html(_pur_doc, height=640, scrolling=False)
             dl3(out, "historico_compras", "pur")
 
+with T_PUR:
+    _render_tab_pur()
+
 # ══ TAB 8 KARDEX ════════════════════════════════════════════════
-with T_KDX:
+@_fragment
+def _render_tab_kdx():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
     if eng.raw_df is None: st.info("Cargue un archivo.")
     else:
         c1,c2,c3,c4=st.columns([2,2,3,1])
         kdf=date.today()-timedelta(days=365)
         kd_f=c1.date_input("Desde",kdf,format="DD/MM/YYYY",key="kf")
         kd_t=c2.date_input("Hasta",date.today(),format="DD/MM/YYYY",key="kt")
-        skl=sorted(eng.raw_df["Código Producto"].dropna().unique().tolist())
-        kd_s=c3.selectbox("SKU",["— Todos —"]+skl,key="ks")
+        # Selector predictivo con filtro estricto de substring
+        _kdx_opts = (eng.raw_df[["Código Producto","Nombre Producto"]]
+                     .drop_duplicates().sort_values("Nombre Producto"))
+        _kdx_codes  = _kdx_opts["Código Producto"].astype(str).tolist()
+        _kdx_names  = _kdx_opts["Nombre Producto"].astype(str).tolist()
+        _kdx_labels = [f"{c} — {n}" for c,n in zip(_kdx_codes, _kdx_names)]
+        _opts_kx = ["— Todos —"] + _kdx_labels
+        kd_s_label = c3.selectbox("SKU", _opts_kx, key="ks")
+        kd_s = "— Todos —" if kd_s_label == "— Todos —" else kd_s_label.split(" — ")[0]
         with c4:
             st.markdown("")
             gen=st.button("▶ Generar",type="primary",key="kg")
@@ -2351,120 +3063,723 @@ with T_KDX:
             sfn=st.session_state["kdx_s"].replace("/","_") or "todos"
             dl3(dk,f"kardex_{sfn}","kdx")
 
+with T_KDX:
+    _render_tab_kdx()
+
+# ── Fragment: Toma Física por Ubicación (tabla tipo planilla) ───
+# Aislado en @st.fragment: las ediciones de celdas solo re-ejecutan esta
+# función, no toda la app.
+def _build_toma_table(eng, rap_df, ubicacion):
+    """Construye DataFrame con TODOS los SKUs + su cantidad anterior para la ubicación dada."""
+    sk = (eng.raw_df[["Código Producto","Nombre Producto"]]
+          .drop_duplicates()
+          .sort_values("Nombre Producto")
+          .reset_index(drop=True)).copy()
+    sk["Código Producto"] = sk["Código Producto"].astype(str)
+    sk["Nombre Producto"]  = sk["Nombre Producto"].astype(str)
+    prev_map = {}
+    if rap_df is not None and not rap_df.empty:
+        pv = rap_df[rap_df["Ubicación"].astype(str) == str(ubicacion)].copy()
+        if not pv.empty:
+            pv = pv.sort_values("Fecha").drop_duplicates(
+                subset=["Código Producto"], keep="last")
+            prev_map = dict(zip(pv["Código Producto"].astype(str),
+                                pd.to_numeric(pv["Cantidad Física"], errors="coerce")))
+    sk["Anterior"]    = sk["Código Producto"].map(prev_map)
+    sk["Nueva"]       = pd.NA
+    sk["Observación"] = ""
+    return sk[["Código Producto","Nombre Producto","Anterior","Nueva","Observación"]]
+
+@_fragment
+def _render_toma_fragment():
+    _frag_t0 = _ptime.perf_counter()
+    _eng = st.session_state.engine
+    if _eng.raw_df is None:
+        st.info("Primero carga los Excel de movimientos en el sidebar.")
+        return
+    rap_state = _get_shared_rapid()
+    rap_df    = rap_state["df"]
+
+    all_ubic = _get_all_ubic()
+
+    # Selector + agregar ubicación
+    col_u, col_add = st.columns([3, 1])
+    with col_u:
+        sel_ubic = st.selectbox("📍 Ubicación donde se hará la toma",
+                                all_ubic, key="tu_ubic")
+    with col_add:
+        st.markdown("")
+        with st.popover("➕ Nueva ubicación", use_container_width=True):
+            _new_ub = st.text_input("Nombre de la nueva ubicación",
+                                     key="tu_new_ubic_name",
+                                     placeholder="Ej: Bodega Norte")
+            if st.button("Agregar", key="tu_add_ubic", type="primary"):
+                _n = (_new_ub or "").strip()
+                if not _n:
+                    st.error("Escribe un nombre.")
+                elif _n in all_ubic:
+                    st.warning(f"«Ya existe la ubicación {_n}».")
+                else:
+                    custom = _get_custom_ubic()
+                    custom["list"].append(_n)
+                    _persist_custom_ubic(custom["list"])
+                    log(f"Nueva ubicación agregada: {_n}")
+                    st.success(f"✓ Agregada: {_n}")
+                    _rerun_frag()
+
+    # Construir la tabla base para esta ubicación
+    table_df = _build_toma_table(_eng, rap_df, sel_ubic)
+
+    st.caption(
+        "Escribe la cantidad en la columna **Nueva**. Tab avanza a Observación; "
+        "Tab otra vez baja a la siguiente fila. Flechas para navegar libremente. "
+        "Columna **Anterior** (gris) es la última toma registrada y no es editable."
+    )
+
+    # Key dinámica por ubicación: al cambiar de ubicación, el editor reinicia
+    editor_key = f"tu_ed_{sel_ubic}"
+    edited = st.data_editor(
+        table_df,
+        use_container_width=True,
+        num_rows="fixed",
+        hide_index=True,
+        column_config={
+            "Código Producto": st.column_config.TextColumn("SKU", width="small", disabled=True),
+            "Nombre Producto":  st.column_config.TextColumn("Producto", disabled=True),
+            "Anterior":         st.column_config.NumberColumn("Anterior", format="%d",
+                                    disabled=True,
+                                    help="Última toma registrada para este SKU en esta ubicación."),
+            "Nueva":            st.column_config.NumberColumn("Nueva cantidad",
+                                    format="%d", min_value=0,
+                                    help="Escribe la cantidad contada. Vacío = pendiente."),
+            "Observación":      st.column_config.TextColumn("Observación",
+                                    help="Opcional. Ej: dñado, en caja master..."),
+        },
+        key=editor_key,
+        height=520,
+    )
+
+    # Progreso
+    total    = len(edited)
+    contados = int(edited["Nueva"].notna().sum())
+    faltan   = total - contados
+    pct      = (contados / total) if total else 0.0
+    st.progress(pct,
+        text=f"✅ Contados: {contados:,}  |  ⏳ Pendientes: {faltan:,}  "
+             f"|  {pct*100:.0f}% de {total:,}")
+
+    # Guardar / Descartar / Borrar
+    cg1, cg2, cg3 = st.columns([2,1,1])
+    with cg1:
+        if st.button(f"💾 Guardar toma de «{sel_ubic}»",
+                     type="primary", use_container_width=True,
+                     key=f"tu_save_{sel_ubic}"):
+            to_save = edited[edited["Nueva"].notna()].copy()
+            if to_save.empty:
+                st.warning("No hay cantidades registradas para guardar.")
+            else:
+                _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                _rows = []
+                for _, row in to_save.iterrows():
+                    _obs = row.get("Observación","")
+                    _rows.append({
+                        "Fecha": _now,
+                        "Ubicación": sel_ubic,
+                        "Código Producto": str(row["Código Producto"]),
+                        "Nombre Producto":  str(row["Nombre Producto"]),
+                        "Cantidad Física": float(row["Nueva"]),
+                        "Observación": _obs if pd.notna(_obs) else "",
+                    })
+                new_df = pd.concat([rap_df, pd.DataFrame(_rows)], ignore_index=True)
+                rap_state["df"] = new_df
+                _persist_rapid(new_df)
+                log(f"Toma «{sel_ubic}»: {len(_rows)} items guardados")
+                # Limpiar estado del editor para esta ubicación
+                st.session_state.pop(editor_key, None)
+                st.success(f"✓ Guardados {len(_rows)} items en «{sel_ubic}». "
+                           f"Cambia de ubicación arriba para continuar.")
+                _rerun_frag()
+    with cg2:
+        if st.button("↺ Descartar edición", use_container_width=True,
+                     key=f"tu_reset_{sel_ubic}",
+                     help="Limpia los cambios sin guardar en la tabla de arriba."):
+            st.session_state.pop(editor_key, None)
+            _rerun_frag()
+    with cg3:
+        # Eliminar TODA la toma guardada de esta ubicación — acción destructiva
+        _n_saved = int((rap_df["Ubicación"].astype(str) == str(sel_ubic)).sum()) \
+                   if not rap_df.empty else 0
+        with st.popover(f"🔥 Borrar toma ({_n_saved})",
+                        use_container_width=True,
+                        disabled=(_n_saved == 0),
+                        help=("No hay tomas guardadas en esta ubicación"
+                              if _n_saved == 0 else
+                              f"Elimina todas las {_n_saved} filas guardadas en «{sel_ubic}»")):
+            st.warning(
+                f"⚠ Vas a borrar **TODAS** las tomas guardadas en "
+                f"**«{sel_ubic}»** ({_n_saved} registro(s)). Acción **irreversible**. "
+                f"El resto de ubicaciones no se tocará."
+            )
+            if st.button("✔ Confirmar eliminación",
+                         type="primary",
+                         key=f"tu_del_confirm_{sel_ubic}"):
+                new_df = rap_df[rap_df["Ubicación"].astype(str) != str(sel_ubic)].copy()
+                rap_state["df"] = new_df
+                _persist_rapid(new_df)
+                log(f"Toma «{sel_ubic}» eliminada: {_n_saved} registro(s) borrados")
+                st.session_state.pop(editor_key, None)
+                st.success(f"✓ Toma de «{sel_ubic}» eliminada ({_n_saved} registros).")
+                _rerun_frag()
+
+    # Log fragment timing
+    _frag_ms = (_ptime.perf_counter() - _frag_t0) * 1000
+    try:
+        _fts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        with open(_PERF_LOG_PATH, "a", encoding="utf-8") as _ff:
+            _ff.write(f"{_fts} FRAGMENT=toma TOTAL={_frag_ms:.0f}ms\n")
+        _fh = _get_perf_history()
+        _fh["runs"].append({"ts": _fts, "total_ms": round(_frag_ms),
+                            "ck": [("fragment_toma", round(_frag_ms))]})
+        _fh["runs"] = _fh["runs"][-30:]
+    except Exception: pass
+
+
+# ── Fragment: Resumen de Tomas Físicas (pivot SKU × Ubicación) ──
+@_fragment
+def _render_resumen_fragment():
+    rap_state = _get_shared_rapid()
+    rap_df    = rap_state["df"]
+
+    if rap_df is None or rap_df.empty:
+        st.info("Aún no hay tomas registradas. Ve a «⚡ Toma» para empezar.")
+        return
+
+    # Para cada (SKU, Ubicación) conservar sólo la última toma
+    latest = rap_df.sort_values("Fecha").drop_duplicates(
+        subset=["Código Producto","Ubicación"], keep="last")
+
+    # Pivot: filas=SKU, columnas=Ubicación, valores=Cantidad
+    pivot = latest.pivot_table(
+        index=["Código Producto","Nombre Producto"],
+        columns="Ubicación",
+        values="Cantidad Física",
+        aggfunc="sum",
+    )
+    # Ordenar columnas: primero DEFAULT_LOCATIONS (las que existan), luego resto alfabético
+    _cols_used = list(pivot.columns)
+    _ordered = [u for u in DEFAULT_LOCATIONS if u in _cols_used]
+    _ordered += sorted([u for u in _cols_used if u not in _ordered])
+    pivot = pivot[_ordered]
+
+    # Total por fila (tratando NaN como 0 para la suma, sin alterar display)
+    pivot_total = pivot.fillna(0).sum(axis=1).astype(int)
+    pivot_display = pivot.reset_index()
+    pivot_display["Total"] = pivot_total.values
+
+    # KPIs arriba
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("SKUs contados", f"{len(pivot_display):,}")
+    k2.metric("Ubicaciones", f"{len(_ordered)}")
+    k3.metric("Unidades totales", f"{int(pivot_total.sum()):,}")
+    k4.metric("Registros", f"{len(rap_df):,}")
+
+    # Configuración de columnas para display (números con formato)
+    _col_cfg = {
+        "Código Producto": st.column_config.TextColumn("SKU", width="small"),
+        "Nombre Producto":  st.column_config.TextColumn("Producto"),
+        "Total":            st.column_config.NumberColumn("Σ Total", format="%d"),
+    }
+    for _c in _ordered:
+        _col_cfg[_c] = st.column_config.NumberColumn(_c, format="%d",
+                         help=f"Cantidad contada en {_c}")
+
+    st.dataframe(pivot_display, use_container_width=True, hide_index=True,
+                 column_config=_col_cfg, height=560)
+
+    # Export
+    st.markdown("#### 📥 Exportar resumen")
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.download_button("📊 Excel",
+            to_xl(pivot_display),
+            "resumen_toma_fisica.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True, key="res_xl")
+    with ec2:
+        _pdf = to_pdf(pivot_display, "Resumen Toma Física")
+        if _pdf:
+            st.download_button("📄 PDF",
+                _pdf, "resumen_toma_fisica.pdf",
+                "application/pdf",
+                use_container_width=True, key="res_pdf")
+        else:
+            st.button("📄 PDF", disabled=True, use_container_width=True,
+                     key="res_pdf_disabled")
+
+    with st.expander("🧾 Historial completo de movimientos"):
+        _hist = rap_df.sort_values("Fecha", ascending=False).reset_index(drop=True)
+        # Tipos consistentes
+        for _tc in ["Fecha","Ubicación","Código Producto","Nombre Producto","Observación"]:
+            if _tc in _hist.columns:
+                _hist[_tc] = _hist[_tc].fillna("").astype(str)
+        st.dataframe(_hist, use_container_width=True, hide_index=True, height=320)
+        st.download_button("📥 Exportar historial",
+            to_xl(_hist), "historial_toma_fisica.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True, key="res_hist_xl")
+
+    # ── Administración: borrar tomas guardadas ──────────────────
+    with st.expander("🧹 Administrar datos guardados — borrar tomas"):
+        st.caption("Para borrar registros guardados (ej: pruebas). Esta acción **NO** se puede deshacer.")
+
+        _all_ubic_saved = sorted(rap_df["Ubicación"].astype(str).unique().tolist())
+
+        # A) Borrar por ubicación(es)
+        st.markdown("##### 🗂 Borrar por ubicación(es)")
+        _to_del = st.multiselect(
+            "Ubicaciones a borrar",
+            _all_ubic_saved,
+            key="res_del_ubic",
+            placeholder="Elige una o más ubicaciones…",
+        )
+        if _to_del:
+            _n_afect = int(rap_df["Ubicación"].astype(str).isin(_to_del).sum())
+            with st.popover(f"🔥 Borrar {len(_to_del)} ubicación(es) ({_n_afect} registro(s))",
+                            use_container_width=True):
+                st.warning(
+                    f"⚠ Se borrarán **{_n_afect}** registro(s) de "
+                    f"**{len(_to_del)}** ubicación(es): "
+                    + ", ".join(f"«{u}»" for u in _to_del)
+                )
+                if st.button("✔ Confirmar", type="primary", key="res_del_sel_confirm"):
+                    new_df = rap_df[~rap_df["Ubicación"].astype(str).isin(_to_del)].copy()
+                    rap_state["df"] = new_df
+                    _persist_rapid(new_df)
+                    log(f"Resumen: borrados {_n_afect} registro(s) "
+                        f"de {len(_to_del)} ubicación(es)")
+                    # Limpiar editores activos de estas ubicaciones
+                    for _u in _to_del:
+                        st.session_state.pop(f"tu_ed_{_u}", None)
+                    st.success(f"✓ {_n_afect} registro(s) eliminados.")
+                    _rerun_frag()
+
+        st.divider()
+
+        # B) Borrar TODO
+        st.markdown("##### 🔥 Borrar TODO el historial")
+        st.caption(f"Actualmente hay **{len(rap_df):,}** registro(s) en **{len(_all_ubic_saved)}** ubicación(es).")
+        with st.popover("🔥 Borrar TODAS las tomas guardadas",
+                        use_container_width=True):
+            st.error(
+                f"⚠ Esto eliminará **TODOS** los {len(rap_df):,} registro(s) de "
+                f"toma física guardados, de **TODAS** las ubicaciones. "
+                f"El archivo `toma_fisica_rapida.xlsx` quedará vacío. "
+                f"Los archivos de inventario (consolidado.xlsx) NO se afectan."
+            )
+            _typed = st.text_input(
+                "Escribe **BORRAR** para confirmar",
+                key="res_del_all_confirm_txt",
+                placeholder="BORRAR",
+            )
+            if st.button("✔ Confirmar borrado total",
+                         type="primary",
+                         disabled=(_typed.strip().upper() != "BORRAR"),
+                         key="res_del_all_confirm_btn"):
+                empty = pd.DataFrame(columns=_RAPIDA_COLS)
+                rap_state["df"] = empty
+                _persist_rapid(empty)
+                log(f"Resumen: borrado TOTAL ({len(rap_df):,} registros eliminados)")
+                # Limpiar TODOS los editores de tomas activos
+                for _k in [k for k in list(st.session_state.keys())
+                           if k.startswith("tu_ed_")]:
+                    st.session_state.pop(_k, None)
+                st.success("✓ Todo el historial de tomas físicas fue eliminado.")
+                _rerun_frag()
+
+# -- Fragment: sub-pestaña Importar --
+@_fragment
+def _render_importar_fragment():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
+    st.markdown("#### 📥 Importar toma física desde Excel")
+    st.caption(
+        "Sube la plantilla llena. El sistema valida cada hoja, lee la fecha de B2, "
+        "ignora celdas vacías o con 0 (= no contado). Las cantidades se agregan a "
+        "la **misma base** que usa «⚡ Toma» para un único registro unificado."
+    )
+
+    pf = st.file_uploader("Archivo (.xlsx / .xls)",
+                          type=["xlsx","xls"], key="ph_up")
+
+    if pf is not None:
+        # Parsear en memoria
+        _tp_ext = os.path.splitext(pf.name)[1]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=_tp_ext) as _tmp:
+            _tmp.write(pf.getvalue())
+            _tp = _tmp.name
+        try:
+            parsed = _parse_plantilla_toma(_tp, _get_all_ubic())
+        except Exception as _ex:
+            st.error(f"Error al leer el Excel: {_ex}")
+            parsed = None
+        finally:
+            try: os.unlink(_tp)
+            except: pass
+
+        if parsed is not None:
+            # Reset de lista de "ignorados" si cambió el archivo
+            _fhash = hash(pf.getvalue()[:50000])
+            if st.session_state.get("_imp_fhash") != _fhash:
+                st.session_state.pop("_imp_ignore", None)
+                st.session_state["_imp_fhash"] = _fhash
+
+            _ignored = set(st.session_state.get("_imp_ignore", []))
+            # Hojas inválidas aún visibles (no marcadas como ignoradas)
+            _invalid_vis = [s for s in parsed["invalid_sheets"]
+                            if s not in _ignored]
+
+            if _invalid_vis:
+                st.warning(
+                    "⚠ El Excel contiene hojas que **no corresponden a "
+                    "ubicaciones registradas**:\n\n"
+                    + "\n".join(f"- `{s}`" for s in _invalid_vis)
+                    + "\n\nPara las que marques, se **crearán nuevas ubicaciones**. "
+                      "Las que **desmarques**, se **omitirán** de la importación."
+                )
+                _to_create = st.multiselect(
+                    "Ubicaciones a crear en el sistema (desmarcar = omitir)",
+                    _invalid_vis,
+                    default=_invalid_vis,
+                    key="imp_create_ubic",
+                )
+                _to_skip = [s for s in _invalid_vis if s not in _to_create]
+                if _to_skip:
+                    st.info(
+                        "Se **omitirán** estas hojas (no se importan): "
+                        + ", ".join(f"`{s}`" for s in _to_skip)
+                    )
+
+                _btn_label = "✔ Continuar con la importación"
+                if _to_create:
+                    _btn_label = (f"➕ Crear {len(_to_create)} y continuar"
+                                   + (f" (omitir {len(_to_skip)})" if _to_skip else ""))
+                if st.button(_btn_label, type="primary", use_container_width=True,
+                             key="imp_create_and_continue"):
+                    if _to_create:
+                        _custom = _get_custom_ubic()
+                        _already = set(_custom["list"])
+                        _added = 0
+                        for _name in _to_create:
+                            if _name not in _already:
+                                _custom["list"].append(_name)
+                                _added += 1
+                        _persist_custom_ubic(_custom["list"])
+                        log(f"Importar: creadas {_added} ubicación(es) desde Excel")
+                    if _to_skip:
+                        st.session_state["_imp_ignore"] = list(_ignored | set(_to_skip))
+                        log(f"Importar: omitidas {len(_to_skip)} hoja(s) — {', '.join(_to_skip)}")
+                    _rerun_frag()
+
+                with st.expander("ℹ Ubicaciones registradas actualmente"):
+                    st.caption(", ".join(f"`{u}`" for u in _get_all_ubic()))
+            elif not parsed["valid_sheets"] or all(
+                    len(info["rows"]) == 0
+                    for info in parsed["valid_sheets"].values()):
+                st.warning(
+                    "El archivo no contiene cantidades para importar. "
+                    "Recuerda: celdas vacías o con valor 0 se consideran «no contadas» y se omiten."
+                )
+            else:
+                # Preview
+                st.markdown("##### 👁 Vista previa")
+                _prev = []
+                _need_date = []
+                for ubic, info in parsed["valid_sheets"].items():
+                    _n = len(info["rows"])
+                    if _n == 0: continue
+                    _prev.append({
+                        "Ubicación": ubic,
+                        "Items a importar": _n,
+                        "Fecha toma (B2)": info["fecha"].strftime("%d/%m/%Y")
+                                           if info["fecha"] else "— sin fecha —",
+                    })
+                    if info["fecha"] is None:
+                        _need_date.append(ubic)
+                _prev_df = pd.DataFrame(_prev)
+                st.dataframe(_prev_df, use_container_width=True, hide_index=True)
+
+                # Fecha fallback para hojas sin B2
+                _fallback_date = None
+                if _need_date:
+                    st.warning(
+                        "⚠ Estas hojas no traen fecha en la celda B2: "
+                        + ", ".join(f"«{u}»" for u in _need_date)
+                    )
+                    _fallback_date = st.date_input(
+                        "Fecha para estas hojas (si la dejas vacía, se usa la de importación)",
+                        value=date.today(),
+                        format="DD/MM/YYYY",
+                        key="imp_fallback_date",
+                    )
+
+                _total_items = sum(len(info["rows"])
+                                   for info in parsed["valid_sheets"].values())
+
+                if st.button(f"✔ Confirmar importación ({_total_items} items en "
+                             f"{len(_prev)} ubicación(es))",
+                             type="primary", key="imp_confirm",
+                             use_container_width=True):
+                    rap_state = _get_shared_rapid()
+                    rap_df = rap_state["df"]
+                    _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    _new_rows = []
+                    for ubic, info in parsed["valid_sheets"].items():
+                        if not info["rows"]: continue
+                        if info["fecha"] is not None:
+                            _fecha_str = info["fecha"].strftime("%Y-%m-%d") + " 00:00"
+                        elif _fallback_date is not None:
+                            _fecha_str = _fallback_date.strftime("%Y-%m-%d") + " 00:00"
+                        else:
+                            _fecha_str = _now_str
+                        for _row in info["rows"]:
+                            _new_rows.append({
+                                "Fecha": _fecha_str,
+                                "Ubicación": ubic,
+                                "Código Producto": _row["codigo"],
+                                "Nombre Producto": _row["nombre"],
+                                "Cantidad Física": float(_row["cantidad"]),
+                                "Observación": _row["obs"],
+                            })
+                    if _new_rows:
+                        _merged = pd.concat([rap_df, pd.DataFrame(_new_rows)],
+                                            ignore_index=True)
+                        rap_state["df"] = _merged
+                        _persist_rapid(_merged)
+                        log(f"Import Excel ({pf.name}): {len(_new_rows)} items "
+                            f"en {len(_prev)} ubicaciones")
+                        st.success(
+                            f"✅ Importados {len(_new_rows)} items en "
+                            f"{len(_prev)} ubicación(es). Revisa «📊 Resumen» "
+                            f"y «📊 Comparación»."
+                        )
+                        _rerun_frag()
+
+# -- Fragment: sub-pestaña Plantilla --
+@_fragment
+def _render_plantilla_fragment():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
+    if eng.raw_df is not None and st.button("📄 Generar plantilla",key="ph_t"):
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill,Font,Alignment,Border,Side
+            from openpyxl.utils import get_column_letter,quote_sheetname
+            sd=(eng.raw_df[["Código Producto","Nombre Producto"]].drop_duplicates()
+                .sort_values("Nombre Producto").reset_index(drop=True))
+            n=len(sd); DR=4
+            H=PatternFill("solid",fgColor="1E3A5F"); Y=PatternFill("solid",fgColor="FEF9C3")
+            G=PatternFill("solid",fgColor="D1FAE5"); Q=PatternFill("solid",fgColor="DBEAFE")
+            F=PatternFill("solid",fgColor="F0FDF4"); E=PatternFill("solid",fgColor="F8FAFC")
+            O=PatternFill("solid",fgColor="FFFFFF"); t=Side(style="thin",color="CBD5E1")
+            brd=Border(t,t,t,t); tg=Side(style="thin",color="BBF7D0"); bg=Border(tg,tg,tg,tg)
+            wb=openpyxl.Workbook(); ls={}
+            _tpl_ubic = _get_all_ubic()
+            for loc in _tpl_ubic:
+                sn=loc[:28].replace("/","-").replace("\\","-").replace("?","").replace("*","").replace("[","").replace("]","").replace(":","")
+                ws2=wb.create_sheet(sn); ls[loc]=(sn,ws2)
+                ws2.merge_cells("A1:D1"); ws2["A1"]=f"TOMA FISICA — {loc.upper()}"
+                ws2["A1"].font=Font(bold=True,size=12,color="FFFFFF"); ws2["A1"].fill=H
+                ws2["A1"].alignment=Alignment(horizontal="center"); ws2.row_dimensions[1].height=24
+                ws2["A2"]="FECHA TOMA:"; ws2["A2"].font=Font(bold=True,size=10,color="FFFFFF"); ws2["A2"].fill=H
+                ws2["B2"].fill=PatternFill("solid",fgColor="EFF6FF"); ws2["B2"].font=Font(size=10,color="1E3A5F")
+                for ci,h in enumerate(["Código","Nombre","Cantidad","Observación"],1):
+                    ce=ws2.cell(3,ci,h); ce.font=Font(bold=True,size=9,color="1E3A5F")
+                    ce.fill=Y; ce.alignment=Alignment(horizontal="center",wrap_text=True); ce.border=brd
+                for ri,(_,row) in enumerate(sd.iterrows(),DR):
+                    fill=E if ri%2==0 else O
+                    ws2.cell(ri,1,str(row["Código Produto"] if "Código Produto" in row else row.get("Código Producto",""))).fill=fill
+                    ws2.cell(ri,1).font=Font(size=9,color="1E40AF")
+                    ws2.cell(ri,2,str(row["Nombre Producto"])).fill=fill; ws2.cell(ri,2).font=Font(size=9,color="111827")
+                    qc=ws2.cell(ri,3,""); qc.fill=Q; qc.alignment=Alignment(horizontal="right"); qc.font=Font(size=10,bold=True,color="1E3A5F")
+                    ws2.cell(ri,4,"").fill=fill
+                    for ci in range(1,5): ws2.cell(ri,ci).border=brd
+                    ws2.row_dimensions[ri].height=16
+                tr2=n+DR; ws2.merge_cells(f"A{tr2}:B{tr2}")
+                ws2.cell(tr2,1,"TOTAL").font=Font(bold=True,size=9,color="FFFFFF"); ws2.cell(tr2,1).fill=H
+                tc2=ws2.cell(tr2,3,f"=SUM(C{DR}:C{tr2-1})")
+                tc2.font=Font(bold=True,size=9,color="065F46"); tc2.fill=G
+                tc2.alignment=Alignment(horizontal="right"); tc2.border=brd
+                ws2.column_dimensions["A"].width=13; ws2.column_dimensions["B"].width=40
+                ws2.column_dimensions["C"].width=11; ws2.column_dimensions["D"].width=30; ws2.freeze_panes="C4"
+            ac=["Código","Nombre"]+_tpl_ubic+["TOTAL"]
+            wr=wb.create_sheet("RESUMEN GENERAL",0); nc=len(ac)
+            wr.merge_cells(f"A1:{get_column_letter(nc)}1")
+            wr["A1"]="RESUMEN — Actualiza automáticamente"; wr["A1"].font=Font(bold=True,size=12,color="FFFFFF"); wr["A1"].fill=H
+            wr["A1"].alignment=Alignment(horizontal="center"); wr.row_dimensions[1].height=24
+            wr.merge_cells(f"A2:{get_column_letter(nc)}2")
+            wr["A2"]="⚠ NO editar — calculado automáticamente desde cada hoja"
+            wr["A2"].font=Font(bold=True,size=9,color="92400E"); wr["A2"].fill=PatternFill("solid",fgColor="FEF3C7")
+            wr["A2"].alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); wr.row_dimensions[2].height=28
+            for ci,col in enumerate(ac,1):
+                ce=wr.cell(3,ci,col); ce.font=Font(bold=True,size=9,color="1E3A5F"); ce.fill=Y
+                ce.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); ce.border=brd
+            wr.row_dimensions[3].height=30
+            for ri,(_,row) in enumerate(sd.iterrows(),DR):
+                fill=E if ri%2==0 else O
+                wr.cell(ri,1,str(row.get("Código Producto",""))).fill=fill; wr.cell(ri,1).font=Font(size=9,color="1E40AF")
+                wr.cell(ri,2,str(row["Nombre Producto"])).fill=fill; wr.cell(ri,2).font=Font(size=9,color="111827")
+                for li,loc in enumerate(_tpl_ubic):
+                    ci=3+li; sn,_=ls[loc]
+                    ce=wr.cell(ri,ci,f"=IFERROR({quote_sheetname(sn)}!C{ri},0)")
+                    ce.fill=F; ce.font=Font(size=9,color="065F46"); ce.alignment=Alignment(horizontal="right"); ce.border=bg
+                cf=get_column_letter(3); cl=get_column_letter(3+len(_tpl_ubic)-1)
+                tc=wr.cell(ri,nc,f"=SUM({cf}{ri}:{cl}{ri})")
+                tc.fill=G; tc.font=Font(bold=True,size=9,color="065F46"); tc.alignment=Alignment(horizontal="right"); tc.border=brd
+                for ci in range(1,3): wr.cell(ri,ci).border=brd
+                wr.row_dimensions[ri].height=16
+            tr=n+DR; wr.merge_cells(f"A{tr}:B{tr}")
+            wr.cell(tr,1,"TOTAL GENERAL").font=Font(bold=True,size=9,color="FFFFFF"); wr.cell(tr,1).fill=H
+            for ci in range(3,nc+1):
+                cl=get_column_letter(ci); ce=wr.cell(tr,ci,f"=SUM({cl}{DR}:{cl}{tr-1})")
+                ce.font=Font(bold=True,size=9,color="FFFFFF"); ce.fill=H
+                ce.alignment=Alignment(horizontal="right"); ce.border=brd
+            wr.column_dimensions["A"].width=13; wr.column_dimensions["B"].width=38
+            for ci in range(3,nc+1): wr.column_dimensions[get_column_letter(ci)].width=13
+            wr.freeze_panes="C4"
+            buf=io.BytesIO(); wb.save(buf)
+            st.download_button("📥 Descargar plantilla",buf.getvalue(),"plantilla_toma_fisica.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.success("✓ Plantilla lista")
+        except Exception as e: st.error(str(e))
+
+# -- Fragment: sub-pestaña Comparacion --
+@_fragment
+def _render_comparacion_fragment():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
+    # Comparación unificada: lee de toma_fisica_rapida.xlsx
+    # (mismo archivo que usan «⚡ Toma» e «📥 Importar»).
+    _rap_state = _get_shared_rapid()
+    _rap_df    = _rap_state["df"]
+    if r is None:
+        st.info("Ejecute el análisis primero.")
+    elif _rap_df is None or _rap_df.empty:
+        st.info("Aún no hay tomas registradas. Usa «⚡ Toma» o «📥 Importar».")
+    else:
+        st.caption(
+            "Comparación **global por SKU**: suma de la última cantidad contada "
+            "en cada ubicación vs. stock total calculado del sistema."
+        )
+        # Última cantidad contada por (SKU, Ubicación)
+        _latest = _rap_df.sort_values("Fecha").drop_duplicates(
+            subset=["Código Producto","Ubicación"], keep="last")
+        # Suma física por SKU (todas las ubicaciones)
+        _phys_sku = (_latest.groupby(["Código Producto","Nombre Producto"])
+                     ["Cantidad Física"].sum().reset_index()
+                     .rename(columns={"Cantidad Física":"Cantidad Física"}))
+        # Stock calculado por SKU (todas las bodegas del sistema)
+        _inv = r.inventory_by_warehouse.copy()
+        if excl_w: _inv = _inv[~_inv["Bodega"].isin(excl_w)]
+        _calc_sku = (_inv.groupby(["Código Producto","Nombre Producto"])
+                     ["Stock"].sum().reset_index()
+                     .rename(columns={"Stock":"Cantidad Calculada"}))
+        # Merge outer → full picture
+        _cmp = _phys_sku.merge(_calc_sku,
+                               on=["Código Producto","Nombre Producto"],
+                               how="outer").fillna(0)
+        _cmp["Diferencia"] = _cmp["Cantidad Física"] - _cmp["Cantidad Calculada"]
+        _cmp["Coincide"]   = _cmp["Diferencia"].abs() < 0.5
+        _cmp = _cmp.sort_values("Diferencia",
+                                key=lambda s: s.abs(), ascending=False)
+        # KPIs
+        _ex  = (_cmp["Coincide"].mean()*100) if len(_cmp) else 0
+        _dif = int((_cmp["Diferencia"].abs() > 0.5).sum())
+        _ok  = int(_cmp["Coincide"].sum())
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric("Exactitud", f"{_ex:.1f}%")
+        m2.metric("Con diferencia", _dif)
+        m3.metric("Coinciden", _ok)
+        m4.metric("SKUs comparados", len(_cmp))
+        # Filtro: solo diferencias / todo
+        _show_mode = st.radio("Mostrar", ["Con diferencia","Todo","Coinciden"],
+                               horizontal=True, key="cmp_mode")
+        if _show_mode == "Con diferencia":
+            _cmp_show = _cmp[_cmp["Diferencia"].abs() > 0.5].copy()
+        elif _show_mode == "Coinciden":
+            _cmp_show = _cmp[_cmp["Coincide"]].copy()
+        else:
+            _cmp_show = _cmp.copy()
+        # Formato para mostrar
+        _cmp_show = _cmp_show[["Código Producto","Nombre Producto",
+                               "Cantidad Calculada","Cantidad Física",
+                               "Diferencia","Coincide"]].reset_index(drop=True)
+        for _c in ("Cantidad Calculada","Cantidad Física","Diferencia"):
+            _cmp_show[_c] = pd.to_numeric(_cmp_show[_c], errors="coerce").fillna(0).astype(int)
+        _cmp_show["Coincide"] = _cmp_show["Coincide"].map({True:"✓", False:"✗"})
+        st.dataframe(_cmp_show, use_container_width=True, hide_index=True, height=540,
+                     column_config={
+                         "Código Producto": st.column_config.TextColumn("SKU", width="small"),
+                         "Nombre Producto": st.column_config.TextColumn("Producto"),
+                         "Cantidad Calculada": st.column_config.NumberColumn("Sistema", format="%d"),
+                         "Cantidad Física":    st.column_config.NumberColumn("Físico", format="%d"),
+                         "Diferencia":         st.column_config.NumberColumn("Diferencia", format="%+d"),
+                         "Coincide":           st.column_config.TextColumn("OK", width="small"),
+                     })
+        dl3(_cmp_show, "comparacion_toma", "ph")
+
+
+_perf("before_tab_phy")
 # ══ TAB 9 TOMA FÍSICA ═══════════════════════════════════════════
 with T_PHY:
     st.markdown("### 🏭 Toma Física")
-    p1,p2,p3=st.tabs(["📥 Importar","📋 Plantilla","📊 Comparación"])
+    p0,p_res,p1,p2,p3=st.tabs([
+        "⚡ Toma", "📊 Resumen",
+        "📥 Importar", "📋 Plantilla", "📊 Comparación"
+    ])
+
+    # ── Sub-pestaña: TOMA POR UBICACIÓN (aislada en @st.fragment) ──
+    with p0:
+        _render_toma_fragment()
+
+    # ── Sub-pestaña: RESUMEN (aislado en @st.fragment) ────────────
+    with p_res:
+        _render_resumen_fragment()
+
+
     with p1:
-        pf=st.file_uploader("Toma física",type=["xlsx","xls"],key="ph_up")
-        if pf and st.button("Cargar",key="ph_l"):
-            try:
-                suf=os.path.splitext(pf.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False,suffix=suf) as tmp:
-                    tmp.write(pf.getvalue()); tp=tmp.name
-                eng.load_physical_count(tp)
-                try: os.unlink(tp)
-                except: pass
-                if eng.physical_df is not None:
-                    _persist_physical(eng.physical_df)
-                log(f"Toma física: {pf.name}"); st.success("✓ Recalcule el análisis.")
-            except Exception as e: st.error(str(e))
+        _render_importar_fragment()
     with p2:
-        if eng.raw_df is not None and st.button("📄 Generar plantilla",key="ph_t"):
-            try:
-                import openpyxl
-                from openpyxl.styles import PatternFill,Font,Alignment,Border,Side
-                from openpyxl.utils import get_column_letter,quote_sheetname
-                sd=(eng.raw_df[["Código Producto","Nombre Producto"]].drop_duplicates()
-                    .sort_values("Nombre Producto").reset_index(drop=True))
-                n=len(sd); DR=4
-                H=PatternFill("solid",fgColor="1E3A5F"); Y=PatternFill("solid",fgColor="FEF9C3")
-                G=PatternFill("solid",fgColor="D1FAE5"); Q=PatternFill("solid",fgColor="DBEAFE")
-                F=PatternFill("solid",fgColor="F0FDF4"); E=PatternFill("solid",fgColor="F8FAFC")
-                O=PatternFill("solid",fgColor="FFFFFF"); t=Side(style="thin",color="CBD5E1")
-                brd=Border(t,t,t,t); tg=Side(style="thin",color="BBF7D0"); bg=Border(tg,tg,tg,tg)
-                wb=openpyxl.Workbook(); ls={}
-                for loc in DEFAULT_LOCATIONS:
-                    sn=loc[:28].replace("/","-").replace("\\","-").replace("?","").replace("*","").replace("[","").replace("]","").replace(":","")
-                    ws2=wb.create_sheet(sn); ls[loc]=(sn,ws2)
-                    ws2.merge_cells("A1:D1"); ws2["A1"]=f"TOMA FISICA — {loc.upper()}"
-                    ws2["A1"].font=Font(bold=True,size=12,color="FFFFFF"); ws2["A1"].fill=H
-                    ws2["A1"].alignment=Alignment(horizontal="center"); ws2.row_dimensions[1].height=24
-                    ws2["A2"]="FECHA TOMA:"; ws2["A2"].font=Font(bold=True,size=10,color="FFFFFF"); ws2["A2"].fill=H
-                    ws2["B2"].fill=PatternFill("solid",fgColor="EFF6FF"); ws2["B2"].font=Font(size=10,color="1E3A5F")
-                    for ci,h in enumerate(["Código","Nombre","Cantidad","Observación"],1):
-                        ce=ws2.cell(3,ci,h); ce.font=Font(bold=True,size=9,color="1E3A5F")
-                        ce.fill=Y; ce.alignment=Alignment(horizontal="center",wrap_text=True); ce.border=brd
-                    for ri,(_,row) in enumerate(sd.iterrows(),DR):
-                        fill=E if ri%2==0 else O
-                        ws2.cell(ri,1,str(row["Código Produto"] if "Código Produto" in row else row.get("Código Producto",""))).fill=fill
-                        ws2.cell(ri,1).font=Font(size=9,color="1E40AF")
-                        ws2.cell(ri,2,str(row["Nombre Producto"])).fill=fill; ws2.cell(ri,2).font=Font(size=9,color="111827")
-                        qc=ws2.cell(ri,3,""); qc.fill=Q; qc.alignment=Alignment(horizontal="right"); qc.font=Font(size=10,bold=True,color="1E3A5F")
-                        ws2.cell(ri,4,"").fill=fill
-                        for ci in range(1,5): ws2.cell(ri,ci).border=brd
-                        ws2.row_dimensions[ri].height=16
-                    tr2=n+DR; ws2.merge_cells(f"A{tr2}:B{tr2}")
-                    ws2.cell(tr2,1,"TOTAL").font=Font(bold=True,size=9,color="FFFFFF"); ws2.cell(tr2,1).fill=H
-                    tc2=ws2.cell(tr2,3,f"=SUM(C{DR}:C{tr2-1})")
-                    tc2.font=Font(bold=True,size=9,color="065F46"); tc2.fill=G
-                    tc2.alignment=Alignment(horizontal="right"); tc2.border=brd
-                    ws2.column_dimensions["A"].width=13; ws2.column_dimensions["B"].width=40
-                    ws2.column_dimensions["C"].width=11; ws2.column_dimensions["D"].width=30; ws2.freeze_panes="C4"
-                ac=["Código","Nombre"]+DEFAULT_LOCATIONS+["TOTAL"]
-                wr=wb.create_sheet("RESUMEN GENERAL",0); nc=len(ac)
-                wr.merge_cells(f"A1:{get_column_letter(nc)}1")
-                wr["A1"]="RESUMEN — Actualiza automáticamente"; wr["A1"].font=Font(bold=True,size=12,color="FFFFFF"); wr["A1"].fill=H
-                wr["A1"].alignment=Alignment(horizontal="center"); wr.row_dimensions[1].height=24
-                wr.merge_cells(f"A2:{get_column_letter(nc)}2")
-                wr["A2"]="⚠ NO editar — calculado automáticamente desde cada hoja"
-                wr["A2"].font=Font(bold=True,size=9,color="92400E"); wr["A2"].fill=PatternFill("solid",fgColor="FEF3C7")
-                wr["A2"].alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); wr.row_dimensions[2].height=28
-                for ci,col in enumerate(ac,1):
-                    ce=wr.cell(3,ci,col); ce.font=Font(bold=True,size=9,color="1E3A5F"); ce.fill=Y
-                    ce.alignment=Alignment(horizontal="center",vertical="center",wrap_text=True); ce.border=brd
-                wr.row_dimensions[3].height=30
-                for ri,(_,row) in enumerate(sd.iterrows(),DR):
-                    fill=E if ri%2==0 else O
-                    wr.cell(ri,1,str(row.get("Código Producto",""))).fill=fill; wr.cell(ri,1).font=Font(size=9,color="1E40AF")
-                    wr.cell(ri,2,str(row["Nombre Producto"])).fill=fill; wr.cell(ri,2).font=Font(size=9,color="111827")
-                    for li,loc in enumerate(DEFAULT_LOCATIONS):
-                        ci=3+li; sn,_=ls[loc]
-                        ce=wr.cell(ri,ci,f"=IFERROR({quote_sheetname(sn)}!C{ri},0)")
-                        ce.fill=F; ce.font=Font(size=9,color="065F46"); ce.alignment=Alignment(horizontal="right"); ce.border=bg
-                    cf=get_column_letter(3); cl=get_column_letter(3+len(DEFAULT_LOCATIONS)-1)
-                    tc=wr.cell(ri,nc,f"=SUM({cf}{ri}:{cl}{ri})")
-                    tc.fill=G; tc.font=Font(bold=True,size=9,color="065F46"); tc.alignment=Alignment(horizontal="right"); tc.border=brd
-                    for ci in range(1,3): wr.cell(ri,ci).border=brd
-                    wr.row_dimensions[ri].height=16
-                tr=n+DR; wr.merge_cells(f"A{tr}:B{tr}")
-                wr.cell(tr,1,"TOTAL GENERAL").font=Font(bold=True,size=9,color="FFFFFF"); wr.cell(tr,1).fill=H
-                for ci in range(3,nc+1):
-                    cl=get_column_letter(ci); ce=wr.cell(tr,ci,f"=SUM({cl}{DR}:{cl}{tr-1})")
-                    ce.font=Font(bold=True,size=9,color="FFFFFF"); ce.fill=H
-                    ce.alignment=Alignment(horizontal="right"); ce.border=brd
-                wr.column_dimensions["A"].width=13; wr.column_dimensions["B"].width=38
-                for ci in range(3,nc+1): wr.column_dimensions[get_column_letter(ci)].width=13
-                wr.freeze_panes="C4"
-                buf=io.BytesIO(); wb.save(buf)
-                st.download_button("📥 Descargar plantilla",buf.getvalue(),"plantilla_toma_fisica.xlsx",
-                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                st.success("✓ Plantilla lista")
-            except Exception as e: st.error(str(e))
+        _render_plantilla_fragment()
     with p3:
-        if r is None: st.info("Ejecute el análisis.")
-        elif r.physical_compare is None: st.info("Importe una toma física.")
-        else:
-            df=r.physical_compare.copy()
-            ex=df["Coincide"].mean()*100 if len(df) else 0
-            dif=len(df[df["Diferencia"].abs()>0])
-            m1,m2=st.columns(2)
-            m1.metric("Exactitud",f"{ex:.1f}%"); m2.metric("Diferencias",dif)
-            st.markdown(tbl(df,["Cantidad Calculada","Cantidad Física","Diferencia"],"ph"),unsafe_allow_html=True)
-            dl3(df,"comparacion_toma","ph")
+        _render_comparacion_fragment()
 
 # ══ TAB 10 LOG ══════════════════════════════════════════════════
 with T_LOG:
     if st.button("🗑 Limpiar",key="lc"): st.session_state.log=[]
     for e in st.session_state.log: st.text(e)
     if not st.session_state.log: st.info("Sin actividad.")
+
+# ── Panel visual de performance en el sidebar ───────────────────
+_perf("end")
+with st.sidebar:
+    with st.expander("⏱ Performance (últimos reruns)", expanded=False):
+        _hist = _get_perf_history()["runs"]
+        if _hist:
+            _rows = []
+            for _r in _hist[-15:]:
+                _d = {"hora": _r["ts"], "total_ms": _r["total_ms"]}
+                for _lbl, _ms in _r["ck"]:
+                    _d[_lbl] = _ms
+                _rows.append(_d)
+            _pdf = pd.DataFrame(_rows).iloc[::-1]
+            st.dataframe(_pdf, use_container_width=True, hide_index=True, height=300)
+            st.caption(f"Archivo: `perf.log` ({_PERF_LOG_PATH})")
+            if st.button("🗑 Limpiar historial", key="perf_clear"):
+                _get_perf_history()["runs"] = []
+                try: os.remove(_PERF_LOG_PATH)
+                except: pass
+                st.rerun()
+        else:
+            st.caption("Sin datos todavía. Interactúa con la app para ver mediciones.")
+
+_perf_flush()

@@ -4,12 +4,15 @@ __pycache__/
 
 # Logs
 *.log
+perf.log
 
 # Datos de negocio (no subir al repo)
 DetalleMovimientosInventario*.xls
 DetalleMovimientosInventario*.xlsx
 consolidado.xlsx
 toma_fisica.xlsx
+toma_fisica_rapida.xlsx
+ubicaciones_custom.json
 
 # Empaquetados
 *.zip
