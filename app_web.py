@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.3.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.3.2 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.3.1"
+APP_VERSION = "v4.3.2"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.3.1":
+if st.session_state.get("_app_version") != "v4.3.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.3.1"
+    st.session_state["_app_version"] = "v4.3.2"
 
-st.set_page_config(page_title="Inventario v4.3.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.3.2", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -250,6 +250,64 @@ def _ubic_sheet_name(ubic):
                     ("[",""),("]",""),(":","")]:
         s = s.replace(ch, rp)
     return s
+
+def _detect_historial_format(path):
+    """True si el Excel es un historial exportado: 1 hoja con encabezados
+    Fecha, Ubicación, Código Producto, Nombre Producto, Cantidad Física."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        if len(wb.sheetnames) != 1:
+            return False
+        ws = wb[wb.sheetnames[0]]
+        first_row = next(ws.iter_rows(values_only=True), None)
+        if not first_row:
+            return False
+        expected = {"Fecha","Ubicación","Código Producto",
+                    "Nombre Producto","Cantidad Física"}
+        headers = {str(v).strip() for v in first_row if v is not None}
+        return expected.issubset(headers)
+    except Exception:
+        return False
+
+def _parse_historial(path):
+    """Parsea el Excel de historial y devuelve filas listas para rap_df.
+    Formato: 1 hoja con columnas Fecha, Ubicación, Código, Nombre, Cantidad, Obs."""
+    df = pd.read_excel(path)
+    req = ["Fecha","Ubicación","Código Producto","Nombre Producto","Cantidad Física"]
+    if not all(c in df.columns for c in req):
+        return [], set()
+    rows = []
+    ubicaciones = set()
+    for _, r in df.iterrows():
+        try:
+            qty = float(r["Cantidad Física"])
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        ubic = str(r.get("Ubicación") or "").strip()
+        if not ubic:
+            continue
+        ubicaciones.add(ubic)
+        fecha = r.get("Fecha")
+        if pd.isna(fecha) or fecha is None or str(fecha).strip() == "":
+            fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        elif isinstance(fecha, (datetime, date)):
+            fecha_str = fecha.strftime("%Y-%m-%d %H:%M") if isinstance(fecha, datetime) else fecha.strftime("%Y-%m-%d")
+        else:
+            fecha_str = str(fecha)
+        _obs_val = r.get("Observación","")
+        _obs = str(_obs_val).strip() if pd.notna(_obs_val) else ""
+        rows.append({
+            "Fecha": fecha_str,
+            "Ubicación": ubic,
+            "Código Producto": str(r["Código Producto"] or "").strip(),
+            "Nombre Producto": str(r["Nombre Producto"] or "").strip(),
+            "Cantidad Física": qty,
+            "Observación": _obs,
+        })
+    return rows, ubicaciones
 
 def _parse_plantilla_toma(path, registered_ubic):
     """Parsea un Excel con el formato de la plantilla de toma física.
@@ -3477,9 +3535,10 @@ def _render_importar_fragment():
     eng = st.session_state.engine
     st.markdown("#### 📥 Importar toma física desde Excel")
     st.caption(
-        "Sube la plantilla llena. El sistema valida cada hoja, lee la fecha de B2, "
-        "ignora celdas vacías o con 0 (= no contado). Las cantidades se agregan a "
-        "la **misma base** que usa «⚡ Toma» para un único registro unificado."
+        "Detecta automáticamente dos formatos:\n\n"
+        "• **Plantilla** (una hoja por ubicación, con columna Cantidad) — generada en «📋 Plantilla».\n"
+        "• **Historial** (una sola hoja con columnas Fecha, Ubicación, SKU, Nombre, Cantidad, Observación) "
+        "— exportada desde «📊 Resumen → Exportar historial». Útil para restaurar backups tras un reboot."
     )
 
     pf = st.file_uploader("Archivo (.xlsx / .xls)",
@@ -3491,6 +3550,102 @@ def _render_importar_fragment():
         with tempfile.NamedTemporaryFile(delete=False, suffix=_tp_ext) as _tmp:
             _tmp.write(pf.getvalue())
             _tp = _tmp.name
+
+        # Detección de formato
+        _is_historial = False
+        try:
+            _is_historial = _detect_historial_format(_tp)
+        except Exception:
+            pass
+
+        if _is_historial:
+            # ── Flujo HISTORIAL (restauración de backup) ──────────
+            try:
+                _hist_rows, _hist_ubic = _parse_historial(_tp)
+            except Exception as _ex:
+                st.error(f"Error al leer el historial: {_ex}")
+                _hist_rows, _hist_ubic = [], set()
+            try: os.unlink(_tp)
+            except: pass
+
+            if not _hist_rows:
+                st.warning("El archivo no contiene filas válidas para importar.")
+                return
+
+            st.info(
+                f"📘 Detectado formato **Historial** (restauración de backup). "
+                f"Contiene **{len(_hist_rows):,}** filas en "
+                f"**{len(_hist_ubic)}** ubicación(es). Las fechas originales se preservan."
+            )
+
+            # Validar que las ubicaciones existan (si no, ofrecer crearlas)
+            _registered = set(_get_all_ubic())
+            _missing = sorted([u for u in _hist_ubic if u not in _registered])
+
+            if _missing:
+                st.warning(
+                    f"⚠ El historial incluye {len(_missing)} ubicación(es) no "
+                    f"registradas en el sistema:\n\n"
+                    + "\n".join(f"- `{u}`" for u in _missing)
+                )
+                _to_create_h = st.multiselect(
+                    "Ubicaciones a crear automáticamente",
+                    _missing, default=_missing,
+                    key="imp_hist_create",
+                    help="Las no seleccionadas omitirán sus filas al importar."
+                )
+                _btn_label = "✔ Crear ubicación(es) e importar historial"
+            else:
+                _to_create_h = []
+                _btn_label = f"✔ Importar historial ({len(_hist_rows):,} filas)"
+
+            # Preview resumen por ubicación
+            _resumen = {}
+            for _r in _hist_rows:
+                _u = _r["Ubicación"]
+                if _u not in _resumen: _resumen[_u] = {"rows":0,"units":0}
+                _resumen[_u]["rows"]  += 1
+                _resumen[_u]["units"] += _r["Cantidad Física"]
+            _prev_df = pd.DataFrame([
+                {"Ubicación": u, "Registros": v["rows"], "Unidades": int(v["units"]),
+                 "Estado": "✓ Registrada" if u in _registered else
+                           ("➕ Se creará" if u in _to_create_h else "⏭ Se omitirá")}
+                for u, v in _resumen.items()
+            ])
+            st.dataframe(_prev_df, use_container_width=True, hide_index=True)
+
+            if st.button(_btn_label, type="primary", use_container_width=True,
+                         key="imp_hist_confirm"):
+                # Crear ubicaciones nuevas seleccionadas
+                if _to_create_h:
+                    _custom = _get_custom_ubic()
+                    _existing = set(_custom["list"])
+                    for _n in _to_create_h:
+                        if _n not in _existing:
+                            _custom["list"].append(_n)
+                    _persist_custom_ubic(_custom["list"])
+
+                # Filtrar filas: solo ubicaciones registradas o recién creadas
+                _valid_ubic = _registered | set(_to_create_h)
+                _to_save = [r for r in _hist_rows if r["Ubicación"] in _valid_ubic]
+                _skipped = len(_hist_rows) - len(_to_save)
+
+                rap_state = _get_shared_rapid()
+                rap_df    = rap_state["df"]
+                if _to_save:
+                    _merged = pd.concat([rap_df, pd.DataFrame(_to_save)],
+                                        ignore_index=True)
+                    rap_state["df"] = _merged
+                    _persist_rapid(_merged)
+                log(f"Import historial ({pf.name}): {len(_to_save)} filas restauradas"
+                    + (f" ({_skipped} omitidas)" if _skipped else ""))
+                _msg = f"✅ Restauradas {len(_to_save):,} filas del historial."
+                if _skipped:
+                    _msg += f" Se omitieron {_skipped} por ubicaciones descartadas."
+                st.success(_msg)
+                _rerun_frag()
+            return   # Terminar aquí el flujo historial
+
         try:
             parsed = _parse_plantilla_toma(_tp, _get_all_ubic())
         except Exception as _ex:
