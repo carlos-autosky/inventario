@@ -215,14 +215,25 @@ class InventoryEngine:
                 (df["Bodega Destino"].isin(selected_warehouses))
             ]
 
-        ref = df["Referencia"].fillna("").astype(str).str.upper()
-        typ = df["Tipo"].fillna("").astype(str).str.upper()
+        ref  = df["Referencia"].fillna("").astype(str).str.upper()
+        typ  = df["Tipo"].fillna("").astype(str).str.upper()
+        desc = df["Descripción"].fillna("").astype(str).str.upper()
 
-        df["is_purchase"] = (typ == "ING") & ref.str.startswith("FAC")
-        df["is_supplier_return"] = (typ == "EGR") & ref.str.startswith("NCT")
-        df["is_sale"] = (typ == "EGR") & ref.str.startswith("FAC")
+        # Baja de inventario: EGR + Descripción contiene "BAJA DE INVENTARIO"
+        # (case-insensitive). Resta stock y reduce compras netas. Se trata como
+        # una devolución a proveedor pero se contabiliza aparte para auditoría.
+        df["is_baja_inventory"] = (typ == "EGR") & desc.str.contains(
+            "BAJA DE INVENTARIO", regex=False, na=False
+        )
+
+        df["is_purchase"]        = (typ == "ING") & ref.str.startswith("FAC")
         df["is_customer_return"] = (typ == "ING") & ref.str.startswith("NCT")
-        df["is_transfer"] = typ == "TRA"
+        # Excluir bajas de venta y dev.proveedor para que no se cuenten dos veces
+        df["is_sale"]            = ((typ == "EGR") & ref.str.startswith("FAC")
+                                    & ~df["is_baja_inventory"])
+        df["is_supplier_return"] = ((typ == "EGR") & ref.str.startswith("NCT")
+                                    & ~df["is_baja_inventory"])
+        df["is_transfer"]        = typ == "TRA"
         df["is_sample_out"] = (
             df["is_transfer"] &
             (df["Bodega Origen"] == PRIMARY_WAREHOUSE) &
@@ -279,6 +290,10 @@ class InventoryEngine:
                 rows.append([sku, name, cat, bd or PRIMARY_WAREHOUSE, qty, unit, "Compra"])
             elif row["is_supplier_return"]:
                 rows.append([sku, name, cat, bo or PRIMARY_WAREHOUSE, -qty, unit, "Dev. Proveedor"])
+            elif row["is_baja_inventory"]:
+                # Baja: resta stock de la bodega origen (como si fuera dev. proveedor
+                # sin crédito). Se lleva aparte en "Grupo Movimiento" para auditoría.
+                rows.append([sku, name, cat, bo or PRIMARY_WAREHOUSE, -qty, unit, "Baja Inv."])
             elif row["is_sale"]:
                 rows.append([sku, name, cat, bo or PRIMARY_WAREHOUSE, -qty, unit, "Venta"])
             elif row["is_customer_return"]:
@@ -334,6 +349,7 @@ class InventoryEngine:
             Dev_Proveedor=("Cantidad", lambda s: s[df.loc[s.index, "is_supplier_return"]].sum()),
             Ventas=("Cantidad", lambda s: s[df.loc[s.index, "is_sale"]].sum()),
             Dev_Cliente=("Cantidad", lambda s: s[df.loc[s.index, "is_customer_return"]].sum()),
+            Baja_Inventario=("Cantidad", lambda s: s[df.loc[s.index, "is_baja_inventory"]].sum()),
             Muestras_Enviadas=("Cantidad", lambda s: s[df.loc[s.index, "is_sample_out"]].sum()),
             Muestras_Devueltas=("Cantidad", lambda s: s[df.loc[s.index, "is_sample_in"]].sum()),
             Valor_Compras=("Valor Total", lambda s: s[df.loc[s.index, "is_purchase"]].sum()),
@@ -369,14 +385,14 @@ class InventoryEngine:
         out = summary.merge(stock, on="Código Producto", how="left").fillna(0)
         paired_cols = [
             "Código Producto", "Nombre Producto", "Categoría Producto",
-            "Compras", "Dev_Proveedor",
+            "Compras", "Dev_Proveedor", "Baja_Inventario",
             "Ventas", "Dev_Cliente",
             "Muestras_Enviadas", "Muestras_Devueltas",
             "Stock Disponible", "Stock Muestras", "Stock Total", "Valor Inventario",
             "Valor_Compras", "Valor_Ventas",
         ]
         existing = [c for c in paired_cols if c in out.columns]
-        return out[existing].sort_values(["Nombre Producto", "Código Producto"])
+        return out[existing].sort_values(["Código Producto", "Nombre Producto"])
 
     def _samples_by_client(self, df: pd.DataFrame) -> pd.DataFrame:
         entreg = (

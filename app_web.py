@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.2.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.3 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.2.1"
+APP_VERSION = "v4.3"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.2.1":
+if st.session_state.get("_app_version") != "v4.3":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.2.1"
+    st.session_state["_app_version"] = "v4.3"
 
-st.set_page_config(page_title="Inventario v4.2.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.3", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1710,6 +1710,7 @@ def _render_tab_sku():
         _ren = {
             "Dev_Proveedor":     "Dev. Proveedor",
             "Dev_Cliente":       "Dev. Cliente",
+            "Baja_Inventario":   "Baja Inv.",
             "Muestras_Enviadas": "Muestras Env.",
             "Muestras_Devueltas":"Muestras Dev.",
             "Valor_Compras":     "Valor Compras",
@@ -1719,6 +1720,7 @@ def _render_tab_sku():
 
         # ── Forzar enteros en todas las columnas de unidades ──────
         _unit_cols = ["Compras","Dev. Proveedor","Ventas","Dev. Cliente",
+                      "Baja Inv.",
                       "Muestras Env.","Muestras Dev.",
                       "Stock Disponible","Stock Muestras","Stock Total"]
         for _uc in _unit_cols:
@@ -1742,6 +1744,7 @@ def _render_tab_sku():
         df["✓ Cuadre"] = (
               _safe(df,"Compras")
             - _safe(df,"Dev. Proveedor")
+            - _safe(df,"Baja Inv.")
             - _safe(df,"Ventas")
             + _safe(df,"Dev. Cliente")
         ).astype(int)
@@ -1790,7 +1793,7 @@ def _render_tab_sku():
         _u_cols = [
             "Código Producto","Nombre Producto",
             "Costo Prom.",               # último costo promedio ponderado
-            "Compras","Dev. Proveedor",
+            "Compras","Dev. Proveedor","Baja Inv.",
             "Ventas","Dev. Cliente",
             "Stock Disponible","Stock Total",
             "✓ Cuadre","Δ vs Stock",
@@ -1800,8 +1803,9 @@ def _render_tab_sku():
         nu=[c for c in mu if c not in("Código Producto","Nombre Producto")]
         _comp_tbl(df[mu], nu, "su", freeze_cols=2, height=520,
                   title=f"{len(df):,} SKUs",
-                  legend="<b>✓ Cuadre</b> = Compras − Dev.Proveedor − Ventas + Dev.Cliente &nbsp;·&nbsp; "
+                  legend="<b>✓ Cuadre</b> = Compras − Dev.Proveedor − <b>Baja Inv.</b> − Ventas + Dev.Cliente &nbsp;·&nbsp; "
                          "<b>Δ vs Stock</b> = Cuadre − Stock Total (0 = correcto) &nbsp;·&nbsp; "
+                         "<b>Baja Inv.</b>: EGR con Descripción «BAJA DE INVENTARIO» (merma, deterioro, obsoleto) &nbsp;·&nbsp; "
                          "<b>Stock Muestras</b>: informativo, transferencias internas")
 
         st.markdown("")
@@ -2937,9 +2941,13 @@ def _render_tab_kdx():
                 df_ts=pd.Timestamp(kd_f); dt_ts=pd.Timestamp(kd_t)
                 ref=raw["Referencia"].fillna("").astype(str).str.upper()
                 typ=raw["Tipo"].fillna("").astype(str).str.upper()
+                desc=raw["Descripción"].fillna("").astype(str).str.upper()
+                # Baja de inventario (EGR + descripción contiene "BAJA DE INVENTARIO")
+                raw["_ib"]=(typ=="EGR") & desc.str.contains("BAJA DE INVENTARIO", regex=False, na=False)
                 raw["_ip"]=(typ=="ING")&ref.str.startswith("FAC")
-                raw["_is"]=(typ=="EGR")&ref.str.startswith("FAC")
-                raw["_ir"]=(typ=="EGR")&ref.str.startswith("NCT")
+                # Excluir bajas de venta y dev. proveedor (prioridad)
+                raw["_is"]=(typ=="EGR")&ref.str.startswith("FAC") & ~raw["_ib"]
+                raw["_ir"]=(typ=="EGR")&ref.str.startswith("NCT") & ~raw["_ib"]
                 raw["_ic"]=(typ=="ING")&ref.str.startswith("NCT")
                 raw["_it"]=typ=="TRA"
                 raw=raw.sort_values(["Código Producto","Fecha"]).reset_index(drop=True)
@@ -2949,7 +2957,7 @@ def _render_tab_kdx():
                     sku=row["Código Producto"]; qty=float(row["Cantidad"])
                     stk[sku]=stk.get(sku,0)
                     if row["_ip"] or row["_ic"]: stk[sku]+=qty
-                    elif row["_is"] or row["_ir"]: stk[sku]-=qty
+                    elif row["_is"] or row["_ir"] or row["_ib"]: stk[sku]-=qty
                     if row["_ip"] and qty>0:
                         vt=float(row["Valor Total"]); cu=vt/qty if qty>0 else 0
                         if cu>0:
@@ -2971,6 +2979,7 @@ def _render_tab_kdx():
                         elif row["_ic"]: tipo="ING DEV.CLI"; ef=+qty
                         elif row["_is"]: tipo="EGRESO"; ef=-qty
                         elif row["_ir"]: tipo="EGR DEV.PROV"; ef=-qty
+                        elif row["_ib"]: tipo="BAJA INV."; ef=-qty
                         elif row["_it"]: tipo="TRANSFERENCIA"; ef=0
                         else: tipo="OTRO"; ef=0
                         saldo+=ef
@@ -3001,6 +3010,7 @@ def _render_tab_kdx():
                 "ING DEV.CLI":("#fef9c3","#854d0e"),
                 "EGRESO":     ("#f3f4f6","#374151"),
                 "EGR DEV.PROV":("#f3f4f6","#374151"),
+                "BAJA INV.":  ("#fee2e2","#991b1b"),
                 "TRANSFERENCIA":("#ede9fe","#5b21b6"),
             }
             nk=["Cantidad","V.Unit","Costo Prom.","Saldo","Valor Inv."]
