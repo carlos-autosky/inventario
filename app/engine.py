@@ -226,14 +226,22 @@ class InventoryEngine:
             "BAJA DE INVENTARIO", regex=False, na=False
         )
 
-        df["is_customer_return"] = (typ == "ING") & ref.str.startswith("NCT")
-        # Compras: Tipo=ING + (Referencia empieza con FAC) O (Descripción
-        # contiene "FACTURA DE COMPRA" cuando la referencia está vacía —
-        # algunos movimientos del contable dejan la ref en blanco y ponen
-        # el N° de factura en la descripción).
+        # Devolución de cliente: Tipo=ING + (Referencia NCT) O descripción
+        # "BAJA DE FACTURA" (cliente devuelve mercancía facturada, ref vacía).
+        df["is_customer_return"] = ((typ == "ING") & (
+            ref.str.startswith("NCT") |
+            desc.str.contains("BAJA DE FACTURA", regex=False, na=False)
+        ))
+        # Compras: Tipo=ING + (Referencia FAC/NVE) O descripción con frases de compra.
+        # Algunos movimientos del contable dejan la ref en blanco o usan NVE (Nota
+        # de Venta del proveedor) y ponen el N° de factura o mención de compra en
+        # la descripción.
         df["is_purchase"] = ((typ == "ING") & ~df["is_customer_return"] & (
             ref.str.startswith("FAC") |
-            desc.str.contains("FACTURA DE COMPRA", regex=False, na=False)
+            ref.str.startswith("NVE") |
+            desc.str.contains("FACTURA DE COMPRA", regex=False, na=False) |
+            desc.str.contains("COMPRA INVENTARIO", regex=False, na=False) |
+            desc.str.contains("COMPRA DE INVENTARIO", regex=False, na=False)
         ))
         # Excluir bajas de venta y dev.proveedor para que no se cuenten dos veces
         df["is_sale"]            = ((typ == "EGR") & ref.str.startswith("FAC")
