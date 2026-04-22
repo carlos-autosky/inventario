@@ -13,8 +13,18 @@ import streamlit as st
 import streamlit.components.v1 as _components
 import tempfile, io, os, sys
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
+
+# Zona horaria Ecuador (America/Guayaquil). Ecuador no observa DST, por lo que
+# un offset fijo -05:00 es correcto y evita dependencias extra (pytz/zoneinfo).
+_EC_TZ = timezone(timedelta(hours=-5))
+
+def _now_ec():
+    """Hora actual en Ecuador (GMT-5). Devuelve datetime naive para servir
+    como drop-in replacement del antiguo datetime.now() en strftime y
+    comparaciones contra fechas ya naive del resto del código."""
+    return datetime.now(_EC_TZ).replace(tzinfo=None)
 
 sys.path.insert(0, os.path.dirname(__file__))
 from app.engine import InventoryEngine
@@ -39,8 +49,8 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.10.1"
-BUILD_TIME  = "21/04/2026 GMT-5"
+APP_VERSION = "v4.11"
+BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
 import logging as _logging
@@ -54,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.10.1":
+if st.session_state.get("_app_version") != "v4.11":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.10.1"
+    st.session_state["_app_version"] = "v4.11"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -82,7 +92,7 @@ def _get_perf_history():
 def _perf_flush():
     if not _PERF_CHECKPOINTS: return
     try:
-        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        ts = _now_ec().strftime("%H:%M:%S.%f")[:-3]
         total_ms = _PERF_CHECKPOINTS[-1][1] * 1000
         ck_list = []
         prev = 0.0
@@ -341,7 +351,7 @@ def _parse_historial(path):
         ubicaciones.add(ubic)
         fecha = r.get("Fecha")
         if pd.isna(fecha) or fecha is None or str(fecha).strip() == "":
-            fecha_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            fecha_str = _now_ec().strftime("%Y-%m-%d %H:%M")
         elif isinstance(fecha, (datetime, date)):
             fecha_str = fecha.strftime("%Y-%m-%d %H:%M") if isinstance(fecha, datetime) else fecha.strftime("%Y-%m-%d")
         else:
@@ -1026,7 +1036,7 @@ _perf("css_js_emitted")
 
 # ── Helpers ─────────────────────────────────────────────────────
 def log(m):
-    ts = datetime.now().strftime("%H:%M:%S")
+    ts = _now_ec().strftime("%H:%M:%S")
     st.session_state.log.insert(0, f"[{ts}] {m}")
     st.session_state.log = st.session_state.log[:300]
 
@@ -1057,7 +1067,7 @@ def to_html(df, title="Reporte"):
     return f"""<!DOCTYPE html><html><head><meta charset='UTF-8'><title>{title}</title>
 <style>body{{font-family:sans-serif;padding:20px;background:#fff;color:#111}}
 h1{{color:#1e3a5f}}table{{border-collapse:collapse;width:100%;font-size:11px}}</style></head>
-<body><h1>{title}</h1><p style='color:#6b7280;font-size:11px'>Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
+<body><h1>{title}</h1><p style='color:#6b7280;font-size:11px'>Generado: {_now_ec().strftime('%d/%m/%Y %H:%M')}</p>
 <table><thead><tr>{hdrs}</tr></thead><tbody>{rows}</tbody></table></body></html>""".encode()
 
 def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
@@ -1137,7 +1147,7 @@ def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
     # Fila 2: fecha
     _fecha_range = f"{_text_start_col}2:{last_col_letter}2"
     ws.merge_cells(_fecha_range)
-    ws[f"{_text_start_col}2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    ws[f"{_text_start_col}2"] = f"Generado: {_now_ec().strftime('%d/%m/%Y %H:%M')}"
     ws[f"{_text_start_col}2"].font = F_SUB
     ws[f"{_text_start_col}2"].alignment = Alignment(horizontal="left", vertical="center")
 
@@ -1238,7 +1248,7 @@ def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
     ws.oddHeader.left.text = title
     ws.oddHeader.left.size = 10
     ws.oddHeader.left.color = "1E3A5F"
-    ws.oddHeader.right.text = datetime.now().strftime("%d/%m/%Y %H:%M")
+    ws.oddHeader.right.text = _now_ec().strftime("%d/%m/%Y %H:%M")
     ws.oddHeader.right.size = 9
     ws.oddHeader.right.color = "64748B"
     ws.oddFooter.center.text = "Página &P de &N"
@@ -1297,7 +1307,7 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
         canvas.drawString(_text_x, _page_h-0.8*cm, title)
         canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
         canvas.drawRightString(_page_w-1.5*cm, _page_h-0.8*cm,
-                                datetime.now().strftime("%d/%m/%Y %H:%M"))
+                                _now_ec().strftime("%d/%m/%Y %H:%M"))
         # Línea horizontal
         canvas.setStrokeColor(C_HDR); canvas.setLineWidth(1.2)
         canvas.line(1.5*cm, _page_h-1.5*cm, _page_w-1.5*cm, _page_h-1.5*cm)
@@ -1438,29 +1448,151 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
 
 
 def to_pdf(df, title="Reporte"):
+    """Export genérico a PDF (landscape A4) con logo corporativo, header con
+    fecha GMT-5, footer con paginación, wrap de texto en columnas no numéricas
+    y anchos proporcionales (más espacio para Nombre/Descripción)."""
     try:
         from reportlab.lib.pagesizes import landscape, A4
         from reportlab.lib import colors
         from reportlab.lib.units import cm
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-        buf=io.BytesIO()
-        doc=SimpleDocTemplate(buf,pagesize=landscape(A4),topMargin=1*cm,bottomMargin=1*cm,leftMargin=1.5*cm,rightMargin=1.5*cm)
-        PW=landscape(A4)[0]-3*cm; cols=list(df.columns); cws=[PW/len(cols)]*len(cols)
-        C_B=colors.HexColor("#1E3A5F"); C_E=colors.HexColor("#F9FAFB")
-        data=[cols]+[list(map(lambda v: "" if str(v) in("nan","None","NaN") else str(v), row)) for _,row in df.iterrows()]
-        ts=[("BACKGROUND",(0,0),(-1,0),C_B),("TEXTCOLOR",(0,0),(-1,0),colors.white),
-            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),("FONTSIZE",(0,0),(-1,-1),7),
-            ("TOPPADDING",(0,0),(-1,-1),2),("BOTTOMPADDING",(0,0),(-1,-1),2),
-            ("BOX",(0,0),(-1,-1),0.5,colors.HexColor("#D1D5DB")),
-            ("INNERGRID",(0,0),(-1,-1),0.3,colors.HexColor("#E5E7EB"))]
-        for i in range(1,len(data)):
-            if i%2==0: ts.append(("BACKGROUND",(0,i),(-1,i),C_E))
-        t=Table(data,colWidths=cws,repeatRows=1); t.setStyle(TableStyle(ts))
-        sty=getSampleStyleSheet()
-        doc.build([Paragraph(title,ParagraphStyle("t",fontSize=13,textColor=C_B,fontName="Helvetica-Bold",spaceAfter=6)),t])
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                        Paragraph)
+    except ImportError:
+        return None
+
+    try:
+        buf = io.BytesIO()
+        C_HDR = colors.HexColor("#1E3A5F")
+        C_TXT = colors.HexColor("#111827")
+        C_MUT = colors.HexColor("#64748B")
+        C_ZEB = colors.HexColor("#F8FAFC")
+        C_BRD = colors.HexColor("#CBD5E1")
+
+        _logo_path = _get_logo_path()
+
+        def _fp(canvas, doc):
+            canvas.saveState()
+            _pw, _ph = landscape(A4)
+            _text_x = 1.5*cm
+            if _logo_path and os.path.exists(_logo_path):
+                try:
+                    from reportlab.lib.utils import ImageReader
+                    _ir = ImageReader(_logo_path)
+                    _iw, _ih = _ir.getSize()
+                    _target_h = 1.1*cm
+                    _target_w = _iw * (_target_h / _ih)
+                    canvas.drawImage(_logo_path, 1.5*cm,
+                                      _ph - _target_h - 0.3*cm,
+                                      width=_target_w, height=_target_h,
+                                      preserveAspectRatio=True, mask="auto")
+                    _text_x = 1.5*cm + _target_w + 0.4*cm
+                except Exception:
+                    pass
+            canvas.setFont("Helvetica-Bold", 10); canvas.setFillColor(C_HDR)
+            canvas.drawString(_text_x, _ph - 0.8*cm, title)
+            canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+            canvas.drawRightString(_pw - 1.5*cm, _ph - 0.8*cm,
+                                    _now_ec().strftime("%d/%m/%Y %H:%M"))
+            canvas.setStrokeColor(C_HDR); canvas.setLineWidth(1.2)
+            canvas.line(1.5*cm, _ph - 1.5*cm, _pw - 1.5*cm, _ph - 1.5*cm)
+            canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+            canvas.drawCentredString(_pw/2, 0.7*cm,
+                                      f"Página {doc.page}  ·  AutoSky Inventario")
+            canvas.restoreState()
+
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                                 topMargin=2.0*cm, bottomMargin=1.2*cm,
+                                 leftMargin=1.5*cm, rightMargin=1.5*cm,
+                                 title=title)
+
+        cols = list(df.columns)
+        _is_num = {c: pd.api.types.is_numeric_dtype(df[c]) for c in cols}
+
+        # Pesos proporcionales de ancho: columnas de nombre/descripción reciben
+        # más espacio, SKU/fecha/numéricas menos. Así `Nombre Producto` ya no
+        # se solapa. Orden importa: código/sku antes que "producto".
+        _weights = []
+        for c in cols:
+            _lc = str(c).lower()
+            if _is_num[c]:
+                _weights.append(1.0)
+            elif any(k in _lc for k in ("código", "codigo", "sku", "fecha",
+                                          "estado", "tipo")):
+                _weights.append(1.5)
+            elif any(k in _lc for k in ("nombre", "descrip", "detalle",
+                                          "observ", "producto")):
+                _weights.append(3.5)
+            else:
+                _weights.append(2.0)
+        _tw = sum(_weights) or 1
+        PW = landscape(A4)[0] - 3*cm
+        cws = [PW * (w / _tw) for w in _weights]
+
+        _hdr_style = ParagraphStyle("pdf_hdr", fontSize=8, textColor=colors.white,
+                                     fontName="Helvetica-Bold", alignment=1,
+                                     leading=10, wordWrap="CJK")
+        _txt_style = ParagraphStyle("pdf_txt", fontSize=7.5, textColor=C_TXT,
+                                     fontName="Helvetica", alignment=0,
+                                     leading=9, wordWrap="LTR")
+
+        def _fmt_num(v):
+            try:
+                f = float(v)
+                if f == int(f):
+                    return f"{int(f):,}"
+                return f"{f:,.2f}"
+            except (ValueError, TypeError):
+                s = str(v)
+                return "" if s in ("nan", "None", "NaN") else s
+
+        _header_row = [Paragraph(str(c), _hdr_style) for c in cols]
+        data = [_header_row]
+        for _, row in df.iterrows():
+            _rc = []
+            for c in cols:
+                v = row[c]
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    _rc.append("")
+                    continue
+                if _is_num[c]:
+                    _rc.append(_fmt_num(v))
+                else:
+                    s = str(v)
+                    if s in ("nan", "None", "NaN"):
+                        _rc.append("")
+                    else:
+                        _rc.append(Paragraph(s, _txt_style))
+            data.append(_rc)
+
+        ts = [
+            ("BACKGROUND",    (0,0), (-1,0),  C_HDR),
+            ("VALIGN",        (0,0), (-1,0),  "MIDDLE"),
+            ("TOPPADDING",    (0,0), (-1,0),  6),
+            ("BOTTOMPADDING", (0,0), (-1,0),  6),
+            ("LEFTPADDING",   (0,0), (-1,0),  3),
+            ("RIGHTPADDING",  (0,0), (-1,0),  3),
+            ("FONTSIZE",      (0,1), (-1,-1), 7.5),
+            ("VALIGN",        (0,1), (-1,-1), "MIDDLE"),
+            ("FONTNAME",      (0,1), (-1,-1), "Helvetica"),
+            ("LEFTPADDING",   (0,1), (-1,-1), 3),
+            ("RIGHTPADDING",  (0,1), (-1,-1), 3),
+            ("TOPPADDING",    (0,1), (-1,-1), 3),
+            ("BOTTOMPADDING", (0,1), (-1,-1), 3),
+            ("GRID",          (0,0), (-1,-1), 0.3, C_BRD),
+            ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, C_ZEB]),
+        ]
+        for i, c in enumerate(cols):
+            if _is_num[c]:
+                ts.append(("ALIGN", (i,1), (i,-1), "RIGHT"))
+
+        t = Table(data, colWidths=cws, repeatRows=1)
+        t.setStyle(TableStyle(ts))
+
+        doc.build([t], onFirstPage=_fp, onLaterPages=_fp)
         return buf.getvalue()
-    except: return None
+    except Exception:
+        return None
 
 def dl3(df, name, key):
     c1,c2,c3=st.columns(3)
@@ -3965,7 +4097,7 @@ def _render_toma_fragment():
             if to_save.empty:
                 st.warning("No hay cantidades registradas para guardar.")
             else:
-                _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                _now = _now_ec().strftime("%Y-%m-%d %H:%M")
                 # En modo compacto la columna "Nombre Producto" no está en `edited`;
                 # lo busco del table_df original (que siempre la tiene).
                 _name_map = dict(zip(
@@ -4030,7 +4162,7 @@ def _render_toma_fragment():
     # Log fragment timing
     _frag_ms = (_ptime.perf_counter() - _frag_t0) * 1000
     try:
-        _fts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        _fts = _now_ec().strftime("%H:%M:%S.%f")[:-3]
         with open(_PERF_LOG_PATH, "a", encoding="utf-8") as _ff:
             _ff.write(f"{_fts} FRAGMENT=toma TOTAL={_frag_ms:.0f}ms\n")
         _fh = _get_perf_history()
@@ -4099,7 +4231,7 @@ def _render_resumen_fragment():
         "destacados, fila de TOTALES al final (sumas por columna), paisaje con "
         "repetición de header entre páginas. Listos para imprimir o enviar."
     )
-    _fecha_nombre = datetime.now().strftime("%Y%m%d_%H%M")
+    _fecha_nombre = _now_ec().strftime("%Y%m%d_%H%M")
     ec1, ec2 = st.columns(2)
     with ec1:
         st.download_button("📊 Excel ejecutivo",
@@ -4173,7 +4305,7 @@ def _render_resumen_fragment():
             f"- 📍 **Ubicaciones custom**: {_n_custom}"
         )
 
-        _fecha_zip = datetime.now().strftime("%Y%m%d_%H%M")
+        _fecha_zip = _now_ec().strftime("%Y%m%d_%H%M")
         cz1, cz2 = st.columns(2)
         with cz1:
             st.download_button(
@@ -4536,7 +4668,7 @@ def _render_importar_fragment():
                              width='stretch'):
                     rap_state = _get_shared_rapid()
                     rap_df = rap_state["df"]
-                    _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    _now_str = _now_ec().strftime("%Y-%m-%d %H:%M")
                     _new_rows = []
                     for ubic, info in parsed["valid_sheets"].items():
                         if not info["rows"]: continue
