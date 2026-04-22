@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.0"
+APP_VERSION = "v4.17.1"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.0":
+if st.session_state.get("_app_version") != "v4.17.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.0"
+    st.session_state["_app_version"] = "v4.17.1"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")

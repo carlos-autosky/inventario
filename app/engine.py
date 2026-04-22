@@ -1,5 +1,11 @@
 
-from __future__ import annotations
+# NOTA: intencionalmente SIN `from __future__ import annotations`.
+# Python 3.14 tiene un bug en dataclasses cuando procesa anotaciones tipo
+# string PEP 604 (`X | None`) durante la carga del módulo — intenta leer
+# `sys.modules[cls.__module__].__dict__` y el módulo aún no está registrado,
+# causando `AttributeError: 'NoneType' object has no attribute '__dict__'`.
+# Sin el future import, las anotaciones se evalúan eagerly con pandas ya
+# importado en el scope local, evitando el bug.
 from dataclasses import dataclass
 import pandas as pd
 from .config import PRIMARY_WAREHOUSE
