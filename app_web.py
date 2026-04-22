@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.8 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.8.1 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.8"
+APP_VERSION = "v4.8.1"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.8":
+if st.session_state.get("_app_version") != "v4.8.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.8"
+    st.session_state["_app_version"] = "v4.8.1"
 
-st.set_page_config(page_title="Inventario v4.8", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.8.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -4360,18 +4360,40 @@ def _render_comparacion_fragment():
         unsafe_allow_html=True
     )
 
+    # ── Estado por fila: FALTANTE / SOBRANTE / OK ──
+    # Diferencia > tol  → FALTANTE (sistema dice que debería haber más)
+    # Diferencia < -tol → SOBRANTE (hay más físicamente)
+    # |Diff| ≤ tol      → OK (coincide)
+    def _estado_row(d):
+        if abs(d) <= _tol:
+            return "✅ OK"
+        return "🟡 FALTANTE" if d > 0 else "🔵 SOBRANTE"
+    _cmp["Estado"] = _cmp["Diferencia"].apply(_estado_row)
+
+    # Ordenamiento inteligente: primero FALTANTE (mayor magnitud),
+    # luego SOBRANTE, luego OK al final.
+    _orden_est = {"🟡 FALTANTE": 0, "🔵 SOBRANTE": 1, "✅ OK": 2}
+    _cmp["_ord"] = _cmp["Estado"].map(_orden_est)
+    _cmp = _cmp.sort_values(["_ord", "Diferencia"],
+                            key=lambda s: s.abs() if s.name == "Diferencia" else s,
+                            ascending=[True, False])
+    _cmp = _cmp.drop(columns=["_ord"])
+
     # KPIs
-    _ex   = (_cmp["Coincide"].mean()*100) if len(_cmp) else 0
-    _dif  = int((_cmp["Diferencia"].abs() > _tol).sum())
-    _ok   = int(_cmp["Coincide"].sum())
-    _total_fis = int(_cmp["Cantidad Física"].sum())
-    _total_ct  = int(_cmp["Cantidad Calculada"].sum())
-    _total_cl  = int(_cmp["En Clientes"].sum())
+    _ex          = (_cmp["Coincide"].mean()*100) if len(_cmp) else 0
+    _n_faltante  = int((_cmp["Estado"] == "🟡 FALTANTE").sum())
+    _n_sobrante  = int((_cmp["Estado"] == "🔵 SOBRANTE").sum())
+    _n_ok        = int((_cmp["Estado"] == "✅ OK").sum())
+    _total_fis   = int(_cmp["Cantidad Física"].sum())
+    _total_ct    = int(_cmp["Cantidad Calculada"].sum())
+    _total_cl    = int(_cmp["En Clientes"].sum())
     m1,m2,m3,m4 = st.columns(4)
     m1.metric("Exactitud", f"{_ex:.1f}%")
-    m2.metric("Con diferencia", _dif)
-    m3.metric("Coinciden", _ok)
-    m4.metric("SKUs", len(_cmp))
+    m2.metric("🟡 Faltantes", _n_faltante,
+              help="SKUs donde el sistema dice que debería haber más de lo contado.")
+    m3.metric("🔵 Sobrantes", _n_sobrante,
+              help="SKUs donde hay más físicamente del que el sistema reporta.")
+    m4.metric("✅ Coinciden", _n_ok)
 
     n1,n2,n3 = st.columns(3)
     n1.metric("Σ Físico contado", f"{_total_fis:,} u")
@@ -4379,37 +4401,55 @@ def _render_comparacion_fragment():
     n3.metric("Σ En clientes", f"{_total_cl:,} u",
               help="Stock del sistema en bodegas consignadas a clientes (no contables)")
 
-    # Filtro de vista
+    # Filtro de vista — 5 opciones
     _show_mode = st.radio("Mostrar",
-        ["Con diferencia","Todo","Coinciden"],
+        ["Con diferencia","🟡 Solo faltantes","🔵 Solo sobrantes",
+         "✅ Coinciden","Todo"],
         horizontal=True, key="cmp_mode")
     if _show_mode == "Con diferencia":
-        _cmp_show = _cmp[_cmp["Diferencia"].abs() > _tol].copy()
-    elif _show_mode == "Coinciden":
-        _cmp_show = _cmp[_cmp["Coincide"]].copy()
+        _cmp_show = _cmp[_cmp["Estado"] != "✅ OK"].copy()
+    elif _show_mode == "🟡 Solo faltantes":
+        _cmp_show = _cmp[_cmp["Estado"] == "🟡 FALTANTE"].copy()
+    elif _show_mode == "🔵 Solo sobrantes":
+        _cmp_show = _cmp[_cmp["Estado"] == "🔵 SOBRANTE"].copy()
+    elif _show_mode == "✅ Coinciden":
+        _cmp_show = _cmp[_cmp["Estado"] == "✅ OK"].copy()
     else:
         _cmp_show = _cmp.copy()
 
+    # Formatear diferencia con flecha/signo
+    def _fmt_dif(d):
+        d = int(d) if pd.notna(d) else 0
+        if d > 0:  return f"+{d:,} ⬆"
+        if d < 0:  return f"{d:,} ⬇"
+        return "0 ="
+
     _cmp_show = _cmp_show[["Código Producto","Nombre Producto",
                            "Cantidad Calculada","Cantidad Física",
-                           "Diferencia","En Clientes","Coincide"]].reset_index(drop=True)
-    for _c in ("Cantidad Calculada","Cantidad Física","Diferencia","En Clientes"):
+                           "Diferencia","En Clientes","Estado"]].reset_index(drop=True)
+    for _c in ("Cantidad Calculada","Cantidad Física","En Clientes"):
         _cmp_show[_c] = pd.to_numeric(_cmp_show[_c], errors="coerce").fillna(0).astype(int)
-    _cmp_show["Coincide"] = _cmp_show["Coincide"].map({True:"✓", False:"✗"})
+    # Guardar numérico para export, mostrar con flecha
+    _cmp_show["Δ"] = pd.to_numeric(_cmp_show["Diferencia"], errors="coerce").fillna(0).astype(int).apply(_fmt_dif)
+    _cmp_show = _cmp_show.drop(columns=["Diferencia"])
+    # Reordenar: Estado primero para que sea lo primero que se vea
+    _cmp_show = _cmp_show[["Estado","Código Producto","Nombre Producto",
+                           "Cantidad Calculada","Cantidad Física","Δ","En Clientes"]]
 
     st.dataframe(_cmp_show, width='stretch', hide_index=True, height=520,
                  column_config={
+                     "Estado":          st.column_config.TextColumn("Estado", width="small"),
                      "Código Producto": st.column_config.TextColumn("SKU", width="small"),
                      "Nombre Producto": st.column_config.TextColumn("Producto"),
                      "Cantidad Calculada": st.column_config.NumberColumn(
                          "Sistema (contable)", format="%d",
                          help=f"Stock en: {', '.join(contables)}"),
                      "Cantidad Física":    st.column_config.NumberColumn("Físico", format="%d"),
-                     "Diferencia":         st.column_config.NumberColumn("Diferencia", format="%+d"),
+                     "Δ":                  st.column_config.TextColumn("Diferencia", width="small",
+                         help="Sistema − Físico. ⬆ = faltante, ⬇ = sobrante."),
                      "En Clientes":        st.column_config.NumberColumn(
                          "En clientes", format="%d",
                          help="Stock en bodegas consignadas (informativo)"),
-                     "Coincide":           st.column_config.TextColumn("OK", width="small"),
                  })
     dl3(_cmp_show, "comparacion_toma", "ph")
 
