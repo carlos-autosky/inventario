@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.11"
+APP_VERSION = "v4.12"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.11":
+if st.session_state.get("_app_version") != "v4.12":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.11"
+    st.session_state["_app_version"] = "v4.12"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -1057,18 +1057,127 @@ def to_xl(df):
     with pd.ExcelWriter(b, engine="openpyxl") as w: df.to_excel(w, index=False)
     return b.getvalue()
 
+def _logo_data_uri():
+    """Logo como data URI base64 para embeber en HTML standalone (sin
+    dependencia de archivos externos al abrir el .html en otra máquina)."""
+    _p = _get_logo_path()
+    if not _p or not os.path.exists(_p):
+        return ""
+    try:
+        import base64
+        with open(_p, "rb") as f:
+            _b64 = base64.b64encode(f.read()).decode("ascii")
+        _ext = os.path.splitext(_p)[1].lower().lstrip(".") or "png"
+        _mt = "image/jpeg" if _ext in ("jpg", "jpeg") else f"image/{_ext}"
+        return f"data:{_mt};base64,{_b64}"
+    except Exception:
+        return ""
+
+
 def to_html(df, title="Reporte"):
-    hdrs = "".join(f"<th style='background:#1e3a5f;color:#fff;padding:6px 10px;text-align:left'>{c}</th>" for c in df.columns)
-    rows = ""
-    for i,(_,r) in enumerate(df.iterrows()):
-        bg="#f9fafb" if i%2==0 else "#fff"
-        cells="".join(f"<td style='padding:4px 10px;border-bottom:1px solid #e5e7eb;background:{bg}'>{str(v) if str(v) not in ('nan','None','NaN') else ''}</td>" for v in r)
-        rows+=f"<tr>{cells}</tr>"
-    return f"""<!DOCTYPE html><html><head><meta charset='UTF-8'><title>{title}</title>
-<style>body{{font-family:sans-serif;padding:20px;background:#fff;color:#111}}
-h1{{color:#1e3a5f}}table{{border-collapse:collapse;width:100%;font-size:11px}}</style></head>
-<body><h1>{title}</h1><p style='color:#6b7280;font-size:11px'>Generado: {_now_ec().strftime('%d/%m/%Y %H:%M')}</p>
-<table><thead><tr>{hdrs}</tr></thead><tbody>{rows}</tbody></table></body></html>""".encode()
+    """Export HTML standalone con logo embebido, header corporativo, fecha
+    GMT-5, anchos proporcionales, zebra, wrap automático y estilos aptos
+    para impresión (page-break-inside:avoid en filas, header repetido)."""
+    import html as _h
+
+    cols = list(df.columns)
+    _is_num = {c: pd.api.types.is_numeric_dtype(df[c]) for c in cols}
+
+    # Mismo heurístico de ancho que el PDF: Nombre/Descripción anchas,
+    # Código/SKU/Fecha/Estado medias, numéricas angostas.
+    _weights = []
+    for c in cols:
+        _lc = str(c).lower()
+        if _is_num[c]:
+            _weights.append(1.0)
+        elif any(k in _lc for k in ("código", "codigo", "sku", "fecha",
+                                      "estado", "tipo")):
+            _weights.append(1.5)
+        elif any(k in _lc for k in ("nombre", "descrip", "detalle",
+                                      "observ", "producto")):
+            _weights.append(3.5)
+        else:
+            _weights.append(2.0)
+    _tw = sum(_weights) or 1
+    _col_widths = [f"{w/_tw*100:.2f}%" for w in _weights]
+
+    def _esc(x):
+        s = str(x)
+        return "" if s in ("nan", "None", "NaN") else _h.escape(s)
+
+    def _fmt(v, is_num):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return ""
+        if is_num:
+            try:
+                f = float(v)
+                if f == int(f):
+                    return f"{int(f):,}"
+                return f"{f:,.2f}"
+            except (ValueError, TypeError):
+                return _esc(v)
+        return _esc(v)
+
+    _colgroup = "".join(f'<col style="width:{w}"/>' for w in _col_widths)
+    _hdrs = "".join(f"<th>{_esc(c)}</th>" for c in cols)
+
+    _rows = []
+    for _, r in df.iterrows():
+        _cells = []
+        for c in cols:
+            cls = "num" if _is_num[c] else "txt"
+            _cells.append(f'<td class="{cls}">{_fmt(r[c], _is_num[c])}</td>')
+        _rows.append(f"<tr>{''.join(_cells)}</tr>")
+
+    _logo = _logo_data_uri()
+    _logo_html = (f'<img src="{_logo}" alt="AutoSky" class="logo"/>'
+                  if _logo else "")
+    _fecha = _now_ec().strftime("%d/%m/%Y %H:%M")
+    _summary = f"{len(df):,} registros &nbsp;·&nbsp; {len(cols)} columnas"
+    _tesc = _esc(title)
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>{_tesc}</title>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+     padding:24px 32px;background:#fff;color:#111827;margin:0}}
+.hdr{{display:flex;align-items:center;border-bottom:2px solid #1E3A5F;
+     padding-bottom:12px;margin-bottom:4px}}
+.hdr .logo{{height:44px;margin-right:16px}}
+.hdr .ttl{{flex:1}}
+.hdr h1{{color:#1E3A5F;font-size:22px;margin:0 0 2px 0;font-weight:700}}
+.hdr .sub{{color:#64748B;font-size:12px}}
+.hdr .meta{{color:#64748B;font-size:11px;text-align:right;white-space:nowrap;line-height:1.4}}
+table{{border-collapse:collapse;width:100%;table-layout:fixed;
+      font-size:11px;margin-top:14px}}
+thead th{{background:#1E3A5F;color:#fff;padding:8px 10px;text-align:center;
+         font-weight:700;border:1px solid #1E3A5F;font-size:11px}}
+tbody td{{padding:6px 10px;border:1px solid #E2E8F0;vertical-align:top;
+         word-wrap:break-word;overflow-wrap:break-word;color:#111827}}
+tbody tr:nth-child(even) td{{background:#F8FAFC}}
+tbody tr:nth-child(odd) td{{background:#FFFFFF}}
+tbody td.num{{text-align:right;font-variant-numeric:tabular-nums}}
+tbody td.txt{{text-align:left}}
+.ftr{{margin-top:16px;padding-top:10px;border-top:1px solid #E2E8F0;
+     color:#64748B;font-size:10px;text-align:center}}
+@media print{{
+  body{{padding:12mm}}
+  .hdr{{margin-bottom:2px}}
+  table{{page-break-inside:auto}} tr{{page-break-inside:avoid}}
+  thead{{display:table-header-group}}
+}}
+</style></head><body>
+<div class="hdr">
+  {_logo_html}
+  <div class="ttl"><h1>{_tesc}</h1><div class="sub">{_summary}</div></div>
+  <div class="meta">{_fecha}<br/>AutoSky Inventario</div>
+</div>
+<table><colgroup>{_colgroup}</colgroup>
+<thead><tr>{_hdrs}</tr></thead>
+<tbody>{''.join(_rows)}</tbody></table>
+<div class="ftr">AutoSky Inventario · Generado {_fecha}</div>
+</body></html>""".encode()
 
 def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
     """Export ejecutivo en Excel con formato listo para imprimir:
