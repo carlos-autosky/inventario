@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.1"
+APP_VERSION = "v4.17.2"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.1":
+if st.session_state.get("_app_version") != "v4.17.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.1"
+    st.session_state["_app_version"] = "v4.17.2"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -275,13 +275,17 @@ def _aggregate_importaciones(imp_df):
 def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
     """Enriquece el DataFrame base (con columnas Código Producto, Nombre Producto,
     Stock Disponible) sumando llegadas confirmadas al stock y agregando columnas
-    'En Tránsito' y 'Fechas Tránsito'. SKUs sólo presentes en importaciones
-    (nunca vistos en Contifico) se agregan como filas nuevas con Stock=llegadas.
-    Respeta la lista de SKUs excluidos globalmente.
+    'En Tránsito' y 'Fechas Tránsito'. Respeta la lista de SKUs excluidos.
 
-    **Nota**: Stock Disponible se clampa a 0 (nunca negativo) — los reportes
-    ejecutivos de disponibilidad no deben mostrar cantidades negativas; un
-    cuadre desfavorable en el motor se interpreta como 'sin stock'."""
+    **Reglas importantes**:
+    - **Stock Disponible se clampa a 0** (nunca negativo) — un cuadre
+      desfavorable del motor se reporta como 'sin stock', no como negativo.
+    - **Sólo se enriquecen SKUs que YA existen en `base_df`** (es decir, en
+      sku_summary del engine = productos con movimientos en Contifico).
+      Los SKUs presentes únicamente en `imp_df` (registrados como "SKU Nuevo"
+      en la pestaña Importación, aún no levantados por Contifico) NO aparecen
+      en los reportes ejecutivos hasta que tengan movimientos en el
+      consolidado.xlsx. Así se evita prometer stock de productos no-oficiales."""
     excluded_skus = set(excluded_skus or [])
     agg = _aggregate_importaciones(imp_df)
 
@@ -297,17 +301,9 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
         df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int).clip(lower=0)
         return df
 
-    # Merge: para cada SKU en agg, ajustar fila existente o agregar nueva
-    existing_skus = set(df["Código Producto"].astype(str))
-    # Mapa SKU→Nombre desde importaciones (para SKUs nuevos)
-    _nombres_imp = {}
-    if imp_df is not None and not imp_df.empty:
-        for _sku, _grp in imp_df.groupby(imp_df["Código Producto"].astype(str)):
-            _nom = _grp["Nombre Producto"].astype(str).replace("nan","").str.strip()
-            _nom = _nom[_nom != ""]
-            _nombres_imp[_sku] = _nom.iloc[0] if len(_nom) else ""
-
-    # Ajustar filas existentes
+    # Ajustar SOLO filas de SKUs existentes en base_df (ya en Contifico).
+    # Los SKUs que sólo están en importaciones se omiten deliberadamente —
+    # no aparecen en reportes hasta que Contifico los registre.
     for i, row in df.iterrows():
         sku = str(row["Código Producto"])
         if sku in agg and sku not in excluded_skus:
@@ -315,22 +311,6 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
             df.at[i, "Stock Disponible"] = int(row["Stock Disponible"]) + a["llegadas"]
             df.at[i, "En Tránsito"]      = a["en_transito"]
             df.at[i, "Fechas Tránsito"]  = a["fechas_txt"]
-
-    # Filas nuevas (SKUs sólo en importaciones)
-    _new_rows = []
-    for sku, a in agg.items():
-        if sku in existing_skus: continue
-        if sku in excluded_skus: continue
-        if (a["en_transito"] + a["llegadas"]) == 0: continue
-        _new_rows.append({
-            "Código Producto": sku,
-            "Nombre Producto": _nombres_imp.get(sku, ""),
-            "Stock Disponible": a["llegadas"],
-            "En Tránsito":      a["en_transito"],
-            "Fechas Tránsito":  a["fechas_txt"],
-        })
-    if _new_rows:
-        df = pd.concat([df, pd.DataFrame(_new_rows)], ignore_index=True)
 
     # Clamp a 0 — Stock Disponible en reportes ejecutivos no puede ser negativo
     df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int).clip(lower=0)
@@ -5882,21 +5862,38 @@ def _render_tab_imp():
 
             # ── Líneas del pedido (data_editor dinámico) ────────
             st.markdown("**Líneas del pedido**")
-            _hint_skus = (f"{len(_known_skus)} SKUs registrados en el "
-                          "consolidado — al guardar, si el SKU coincide, "
-                          "el Nombre se autocompleta.") if _known_skus else (
-                          "Aún no hay SKUs cargados del consolidado — "
-                          "completa SKU y Nombre manualmente.")
-            st.caption(f"Usa el botón **➕** de la tabla para agregar filas "
-                       f"(una por línea del pedido). {_hint_skus}")
+            if _known_skus:
+                st.caption(
+                    f"Usa el botón **➕** de la tabla para agregar filas "
+                    f"(una por línea del pedido). Elegí el SKU del dropdown "
+                    f"(**{len(_known_skus):,} SKUs** del consolidado). Sólo "
+                    f"si la importación trae un SKU **aún no registrado en "
+                    f"Contifico**, completá la columna **SKU Nuevo** en su "
+                    f"lugar y escribí su Nombre."
+                )
+                st.caption(
+                    "⚠ **Importante**: los SKUs ingresados como nuevos **NO "
+                    "aparecerán en los reportes ejecutivos de disponibilidad** "
+                    "(CSV portal, PDF ejecutivo, vista móvil) hasta que "
+                    "Contifico levante la compra y el SKU tenga movimientos "
+                    "en el consolidado.xlsx. Mientras tanto quedan trackeados "
+                    "en esta pestaña pero sin influir en los reportes."
+                )
+            else:
+                st.caption(
+                    "Aún no hay SKUs cargados del consolidado. Completa "
+                    "todo como **SKU Nuevo** manualmente; los productos "
+                    "sólo aparecerán en reportes cuando cargues el "
+                    "consolidado.xlsx actualizado."
+                )
 
             # Template vacío: una fila placeholder que el usuario llena o
             # borra. Con Cantidad=0 la validación filtra la fila vacía al
             # submit sin requerir que el usuario la elimine manualmente.
             _default_fecha = _now_ec().date() + timedelta(days=30)
             _empty_lines = pd.DataFrame([
-                {"SKU": "", "Nombre": "", "Cantidad": 0,
-                 "Tipo Embarque": _IMP_TIPOS[0],
+                {"SKU Registrado": "", "SKU Nuevo": "", "Nombre": "",
+                 "Cantidad": 0, "Tipo Embarque": _IMP_TIPOS[0],
                  "Fecha Tentativa": _default_fecha,
                  "Observaciones": ""}
             ])
@@ -5908,15 +5905,22 @@ def _render_tab_imp():
                 width='stretch',
                 hide_index=True,
                 column_config={
-                    "SKU": st.column_config.TextColumn(
-                        "SKU", required=False, width="small",
-                        help="Código del producto. Se autocompleta el "
-                             "Nombre al guardar si está en el consolidado."),
+                    "SKU Registrado": st.column_config.SelectboxColumn(
+                        "SKU (del consolidado)",
+                        options=[""] + _known_skus, width="small",
+                        help="Elegí el SKU del consolidado.xlsx. Si no "
+                             "está en la lista, dejá esta celda vacía y "
+                             "completá 'SKU Nuevo' a la derecha."),
+                    "SKU Nuevo": st.column_config.TextColumn(
+                        "SKU Nuevo", width="small",
+                        help="Sólo para SKUs que todavía no están en "
+                             "Contifico. NO aparecerán en reportes "
+                             "ejecutivos hasta que Contifico los registre."),
                     "Nombre": st.column_config.TextColumn(
                         "Nombre (opcional)", width="medium",
-                        help="Déjalo vacío para auto-rellenar desde el "
-                             "consolidado; complétalo manualmente sólo "
-                             "si el SKU es nuevo."),
+                        help="Para SKU registrado se autocompleta al guardar "
+                             "si lo dejas vacío. Para SKU Nuevo, escribilo "
+                             "manualmente."),
                     "Cantidad": st.column_config.NumberColumn(
                         "Cantidad", min_value=0, step=1, format="%d",
                         help="Debe ser mayor a 0 para que la línea se "
@@ -5945,13 +5949,17 @@ def _render_tab_imp():
                     _errs.append("Falta **Proveedor**.")
 
                 _valid = _edit_lines.copy()
-                _valid["SKU"] = _valid["SKU"].fillna("").astype(str).str.strip()
+                _valid["SKU Registrado"] = _valid["SKU Registrado"].fillna("").astype(str).str.strip()
+                _valid["SKU Nuevo"] = _valid["SKU Nuevo"].fillna("").astype(str).str.strip()
+                # SKU final: registrado tiene prioridad; si vacío, usar SKU Nuevo
+                _valid["_sku_final"] = _valid["SKU Registrado"].where(
+                    _valid["SKU Registrado"] != "", _valid["SKU Nuevo"])
                 _valid["Cantidad"] = pd.to_numeric(
                     _valid["Cantidad"], errors="coerce").fillna(0).astype(int)
-                _valid = _valid[(_valid["SKU"] != "") & (_valid["Cantidad"] > 0)]
+                _valid = _valid[(_valid["_sku_final"] != "") & (_valid["Cantidad"] > 0)]
                 if len(_valid) == 0:
                     _errs.append("Agrega al menos una línea con **SKU** "
-                                 "y **Cantidad** > 0.")
+                                 "(registrado o nuevo) y **Cantidad** > 0.")
 
                 if _errs:
                     for _e in _errs: st.error(_e)
@@ -5968,7 +5976,7 @@ def _render_tab_imp():
 
                     _new_rows = []
                     for _, _row in _valid.iterrows():
-                        _sku = str(_row["SKU"]).strip()
+                        _sku = str(_row["_sku_final"]).strip()
                         _nombre = str(_row.get("Nombre","") or "").strip()
                         if not _nombre:
                             _nombre = _sku_name_map.get(_sku, "")
@@ -6629,12 +6637,35 @@ def _render_tab_exp():
     _gl_txt = (pd.to_datetime(_global_last).strftime("%d/%m/%Y")
                if pd.notna(_global_last) else "—")
 
-    _en_transito_total = int(base["En Tránsito"].sum()) if "En Tránsito" in base.columns else 0
+    # KPI "En tránsito" se calcula sobre TODAS las importaciones INGRESADA
+    # (incluso SKUs nuevos aún no registrados en Contifico), para no perder
+    # visibilidad del volumen total de pedidos en camino. Los SKUs nuevos
+    # no aparecen en las tablas del reporte, pero su unidad suma al KPI.
+    _en_tr_base = int(base["En Tránsito"].sum()) if "En Tránsito" in base.columns else 0
+    _en_tr_extra = 0
+    _extra_skus = 0
+    if not _imp_df_exp.empty:
+        _imp_ingr = _imp_df_exp[
+            _imp_df_exp["Estado"].astype(str).str.upper() == "INGRESADA"]
+        _imp_ingr_tot = int(pd.to_numeric(
+            _imp_ingr["Cantidad"], errors="coerce").fillna(0).sum())
+        _en_tr_extra = max(0, _imp_ingr_tot - _en_tr_base)
+        _skus_en_base = set(base["Código Producto"].astype(str))
+        _extra_skus = len(set(_imp_ingr["Código Producto"].astype(str).str.strip())
+                            - _skus_en_base - {""})
+    _en_transito_total = _en_tr_base + _en_tr_extra
+
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("SKUs exportables", f"{len(base):,}")
+    k1.metric("SKUs exportables", f"{len(base):,}",
+              f"+{_extra_skus} SKU nuevo" if _extra_skus else None,
+              help=("SKUs 'nuevos' (aún no en Contifico) están trackeados en "
+                    "la tab Importación pero no aparecen en el reporte hasta "
+                    "que Contifico los levante.") if _extra_skus else None)
     k2.metric("Con stock > 0",
               f"{int((base['Stock Disponible'] > 0).sum()):,}")
-    k3.metric("En tránsito (total u)", f"{_en_transito_total:,}")
+    k3.metric("En tránsito (total u)", f"{_en_transito_total:,}",
+              help="Incluye importaciones de SKUs nuevos no registrados, "
+                   "para no perder visibilidad del volumen en camino.")
     k4.metric("Actualizado hasta", _gl_txt)
 
     # ── Sección A: datos para portal web ─────────────────────────────
