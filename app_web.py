@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.12"
+APP_VERSION = "v4.12.1"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.12":
+if st.session_state.get("_app_version") != "v4.12.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.12"
+    st.session_state["_app_version"] = "v4.12.1"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -1057,6 +1057,61 @@ def to_xl(df):
     with pd.ExcelWriter(b, engine="openpyxl") as w: df.to_excel(w, index=False)
     return b.getvalue()
 
+def _col_fmt_mode(col_name, is_num):
+    """Decide el formato de una columna numérica por semántica del nombre:
+    - 'money': columnas monetarias (valor, costo, precio, monto, usd, $) →
+      2 decimales fijos siempre (ej. 17.00, 4,882.82).
+    - 'int':   columnas de cantidad/stock (stock, cantidad, compras, ventas,
+      muestras, dev, baja, cuadre, unidades) → entero sin decimales.
+    - 'auto':  numérica sin match claro → int si valor redondo, sino 2 dec.
+    - 'text':  no numérica (respeta str(v) con escape del caller).
+
+    El orden importa: 'valor' se evalúa antes que 'compras'/'ventas' para
+    que 'Valor Compras' caiga en money, no en int."""
+    if not is_num:
+        return "text"
+    _lc = str(col_name).lower()
+    if any(k in _lc for k in ("valor", "costo", "precio", "monto",
+                               "importe", "usd", "$")):
+        return "money"
+    if any(k in _lc for k in ("stock", "cantidad", "compras", "ventas",
+                               "muestras", "dev", "baja", "cuadre",
+                               "unidades", "piezas", "registros",
+                               "inventario")):
+        return "int"
+    return "auto"
+
+
+def _fmt_cell(v, mode):
+    """Formatea un valor según el modo devuelto por _col_fmt_mode.
+    Devuelve siempre str; el caller se encarga de escapar HTML si aplica."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    if mode == "money":
+        try:
+            return f"{float(v):,.2f}"
+        except (ValueError, TypeError):
+            s = str(v)
+            return "" if s in ("nan", "None", "NaN") else s
+    if mode == "int":
+        try:
+            return f"{int(round(float(v))):,}"
+        except (ValueError, TypeError):
+            s = str(v)
+            return "" if s in ("nan", "None", "NaN") else s
+    if mode == "auto":
+        try:
+            f = float(v)
+            if f == int(f):
+                return f"{int(f):,}"
+            return f"{f:,.2f}"
+        except (ValueError, TypeError):
+            s = str(v)
+            return "" if s in ("nan", "None", "NaN") else s
+    s = str(v)
+    return "" if s in ("nan", "None", "NaN") else s
+
+
 def _logo_data_uri():
     """Logo como data URI base64 para embeber en HTML standalone (sin
     dependencia de archivos externos al abrir el .html en otra máquina)."""
@@ -1105,18 +1160,7 @@ def to_html(df, title="Reporte"):
         s = str(x)
         return "" if s in ("nan", "None", "NaN") else _h.escape(s)
 
-    def _fmt(v, is_num):
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return ""
-        if is_num:
-            try:
-                f = float(v)
-                if f == int(f):
-                    return f"{int(f):,}"
-                return f"{f:,.2f}"
-            except (ValueError, TypeError):
-                return _esc(v)
-        return _esc(v)
+    _fmt_modes = {c: _col_fmt_mode(c, _is_num[c]) for c in cols}
 
     _colgroup = "".join(f'<col style="width:{w}"/>' for w in _col_widths)
     _hdrs = "".join(f"<th>{_esc(c)}</th>" for c in cols)
@@ -1125,8 +1169,9 @@ def to_html(df, title="Reporte"):
     for _, r in df.iterrows():
         _cells = []
         for c in cols:
-            cls = "num" if _is_num[c] else "txt"
-            _cells.append(f'<td class="{cls}">{_fmt(r[c], _is_num[c])}</td>')
+            mode = _fmt_modes[c]
+            cls = "num" if mode in ("money", "int", "auto") else "txt"
+            _cells.append(f'<td class="{cls}">{_h.escape(_fmt_cell(r[c], mode))}</td>')
         _rows.append(f"<tr>{''.join(_cells)}</tr>")
 
     _logo = _logo_data_uri()
@@ -1645,33 +1690,19 @@ def to_pdf(df, title="Reporte"):
                                      fontName="Helvetica", alignment=0,
                                      leading=9, wordWrap="LTR")
 
-        def _fmt_num(v):
-            try:
-                f = float(v)
-                if f == int(f):
-                    return f"{int(f):,}"
-                return f"{f:,.2f}"
-            except (ValueError, TypeError):
-                s = str(v)
-                return "" if s in ("nan", "None", "NaN") else s
+        _fmt_modes = {c: _col_fmt_mode(c, _is_num[c]) for c in cols}
 
         _header_row = [Paragraph(str(c), _hdr_style) for c in cols]
         data = [_header_row]
         for _, row in df.iterrows():
             _rc = []
             for c in cols:
-                v = row[c]
-                if v is None or (isinstance(v, float) and pd.isna(v)):
-                    _rc.append("")
-                    continue
-                if _is_num[c]:
-                    _rc.append(_fmt_num(v))
+                mode = _fmt_modes[c]
+                s = _fmt_cell(row[c], mode)
+                if mode == "text":
+                    _rc.append(Paragraph(s, _txt_style) if s else "")
                 else:
-                    s = str(v)
-                    if s in ("nan", "None", "NaN"):
-                        _rc.append("")
-                    else:
-                        _rc.append(Paragraph(s, _txt_style))
+                    _rc.append(s)
             data.append(_rc)
 
         ts = [
