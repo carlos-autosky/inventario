@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.15.3"
+APP_VERSION = "v4.16.0"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.15.3":
+if st.session_state.get("_app_version") != "v4.16.0":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.15.3"
+    st.session_state["_app_version"] = "v4.16.0"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -165,6 +165,172 @@ def _persist_rapid(df):
             df.to_excel(RAPIDA_PATH, index=False, engine="openpyxl")
     except Exception as ex:
         log(f"⚠ No se pudo persistir toma rápida: {ex}")
+
+# ── Importaciones (pedidos al proveedor en tránsito / por llegar) ──
+IMPORTACIONES_PATH = os.path.join(_BASE_DIR, "importaciones.xlsx")
+_IMP_COLS = [
+    "ID", "Pedido", "Proveedor",
+    "Código Producto", "Nombre Producto",
+    "Cantidad", "Tipo Embarque", "Fecha Tentativa",
+    "Estado", "Fecha Registro", "Fecha Llegada Real", "Observaciones",
+]
+_IMP_ESTADOS = ["INGRESADA", "LLEGADA", "PROCESADA"]
+_IMP_TIPOS   = ["Marítimo", "Aéreo"]
+
+def _imp_empty_df():
+    return pd.DataFrame(columns=_IMP_COLS)
+
+@st.cache_resource
+def _get_shared_importaciones():
+    state = {"df": _imp_empty_df()}
+    if os.path.exists(IMPORTACIONES_PATH):
+        try:
+            df = pd.read_excel(IMPORTACIONES_PATH)
+            for c in _IMP_COLS:
+                if c not in df.columns: df[c] = ""
+            # Normalizar tipos: Cantidad numérica; fechas como date si se puede
+            df["Cantidad"] = pd.to_numeric(df["Cantidad"], errors="coerce").fillna(0).astype(int)
+            state["df"] = df[_IMP_COLS]
+        except Exception:
+            pass
+    return state
+
+def _persist_importaciones(df):
+    try:
+        with _SHARED_WRITE_LOCK:
+            df.to_excel(IMPORTACIONES_PATH, index=False, engine="openpyxl")
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir importaciones: {ex}")
+
+def _next_import_id(df):
+    """Genera el siguiente ID correlativo IMP-NNNN examinando los IDs existentes."""
+    if df is None or df.empty or "ID" not in df.columns:
+        return "IMP-0001"
+    import re as _re
+    max_n = 0
+    for _v in df["ID"].astype(str):
+        m = _re.match(r"IMP-(\d+)", _v.strip())
+        if m:
+            try: max_n = max(max_n, int(m.group(1)))
+            except Exception: pass
+    return f"IMP-{max_n+1:04d}"
+
+def _imp_fecha_fmt(v):
+    """Formatea una fecha tentativa/real a DD/MM/YYYY, robusto a strings/NaT/datetime."""
+    if v is None or (isinstance(v, float) and pd.isna(v)): return ""
+    try:
+        ts = pd.to_datetime(v, errors="coerce")
+        if pd.isna(ts): return str(v) if v else ""
+        return ts.strftime("%d/%m/%Y")
+    except Exception:
+        return str(v) if v else ""
+
+def _imp_tipo_abbr(t):
+    """Abreviación de tipo embarque para strings compactos (A=Aéreo, M=Marítimo)."""
+    s = str(t or "").strip().lower()
+    if s.startswith("a"): return "A"
+    if s.startswith("m"): return "M"
+    return "?"
+
+def _aggregate_importaciones(imp_df):
+    """Agrega el DataFrame de importaciones por SKU. Devuelve dict:
+      sku -> {"en_transito": int, "llegadas": int, "fechas_txt": str}
+    - en_transito: suma de Cantidad en estado INGRESADA (aún no llegó)
+    - llegadas:    suma de Cantidad en estado LLEGADA  (en bodega, aún no en
+                   Contifico — se suma al Stock Disponible)
+    - fechas_txt:  string con fechas tentativas e.g. '05/05/2026 (A·40), 20/06/2026 (M·60)'
+                   sólo para tránsito (INGRESADA). PROCESADA no aporta a nada."""
+    out = {}
+    if imp_df is None or imp_df.empty:
+        return out
+    df = imp_df.copy()
+    df["Cantidad"] = pd.to_numeric(df["Cantidad"], errors="coerce").fillna(0).astype(int)
+    df["Estado"]   = df["Estado"].fillna("").astype(str).str.upper()
+
+    # Agrupar por SKU
+    for sku, grp in df.groupby(df["Código Producto"].astype(str)):
+        if not sku or sku == "nan": continue
+        ingr = grp[grp["Estado"] == "INGRESADA"]
+        lleg = grp[grp["Estado"] == "LLEGADA"]
+        en_tr = int(ingr["Cantidad"].sum())
+        lleg_q = int(lleg["Cantidad"].sum())
+
+        # Fechas de tránsito: ordenadas asc, formato DD/MM/YYYY (tipo·qty)
+        _piezas = []
+        _ingr_sorted = ingr.copy()
+        _ingr_sorted["_d"] = pd.to_datetime(_ingr_sorted["Fecha Tentativa"],
+                                              errors="coerce")
+        _ingr_sorted = _ingr_sorted.sort_values("_d", na_position="last")
+        for _, r in _ingr_sorted.iterrows():
+            _f = _imp_fecha_fmt(r["Fecha Tentativa"])
+            _t = _imp_tipo_abbr(r["Tipo Embarque"])
+            _q = int(r["Cantidad"])
+            _piezas.append(f"{_f} ({_t}·{_q})" if _f else f"({_t}·{_q})")
+        fechas_txt = ", ".join(_piezas)
+
+        out[sku] = {"en_transito": en_tr, "llegadas": lleg_q,
+                    "fechas_txt": fechas_txt}
+    return out
+
+def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
+    """Enriquece el DataFrame base (con columnas Código Producto, Nombre Producto,
+    Stock Disponible) sumando llegadas confirmadas al stock y agregando columnas
+    'En Tránsito' y 'Fechas Tránsito'. SKUs sólo presentes en importaciones
+    (nunca vistos en Contifico) se agregan como filas nuevas con Stock=llegadas.
+    Respeta la lista de SKUs excluidos globalmente."""
+    excluded_skus = set(excluded_skus or [])
+    agg = _aggregate_importaciones(imp_df)
+
+    df = base_df.copy()
+    if "En Tránsito" not in df.columns:
+        df["En Tránsito"] = 0
+    if "Fechas Tránsito" not in df.columns:
+        df["Fechas Tránsito"] = ""
+
+    if not agg:
+        df["En Tránsito"] = df["En Tránsito"].fillna(0).astype(int)
+        df["Fechas Tránsito"] = df["Fechas Tránsito"].fillna("").astype(str)
+        return df
+
+    # Merge: para cada SKU en agg, ajustar fila existente o agregar nueva
+    existing_skus = set(df["Código Producto"].astype(str))
+    # Mapa SKU→Nombre desde importaciones (para SKUs nuevos)
+    _nombres_imp = {}
+    if imp_df is not None and not imp_df.empty:
+        for _sku, _grp in imp_df.groupby(imp_df["Código Producto"].astype(str)):
+            _nom = _grp["Nombre Producto"].astype(str).replace("nan","").str.strip()
+            _nom = _nom[_nom != ""]
+            _nombres_imp[_sku] = _nom.iloc[0] if len(_nom) else ""
+
+    # Ajustar filas existentes
+    for i, row in df.iterrows():
+        sku = str(row["Código Producto"])
+        if sku in agg and sku not in excluded_skus:
+            a = agg[sku]
+            df.at[i, "Stock Disponible"] = int(row["Stock Disponible"]) + a["llegadas"]
+            df.at[i, "En Tránsito"]      = a["en_transito"]
+            df.at[i, "Fechas Tránsito"]  = a["fechas_txt"]
+
+    # Filas nuevas (SKUs sólo en importaciones)
+    _new_rows = []
+    for sku, a in agg.items():
+        if sku in existing_skus: continue
+        if sku in excluded_skus: continue
+        if (a["en_transito"] + a["llegadas"]) == 0: continue
+        _new_rows.append({
+            "Código Producto": sku,
+            "Nombre Producto": _nombres_imp.get(sku, ""),
+            "Stock Disponible": a["llegadas"],
+            "En Tránsito":      a["en_transito"],
+            "Fechas Tránsito":  a["fechas_txt"],
+        })
+    if _new_rows:
+        df = pd.concat([df, pd.DataFrame(_new_rows)], ignore_index=True)
+
+    df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int)
+    df["En Tránsito"]      = df["En Tránsito"].fillna(0).astype(int)
+    df["Fechas Tránsito"]  = df["Fechas Tránsito"].fillna("").astype(str)
+    return df.sort_values("Código Producto").reset_index(drop=True)
 
 # Ubicaciones personalizadas — archivo JSON global compartido entre sesiones
 UBIC_CUSTOM_PATH = os.path.join(_BASE_DIR, "ubicaciones_custom.json")
@@ -1605,7 +1771,9 @@ def to_html_mobile(df, fecha_corte_txt):
     """HTML standalone responsive optimizado para visualización móvil:
     una card por SKU con Código/Nombre/Stock, buscador client-side (JS),
     logo embebido en base64. Columnas esperadas: SKU, Nombre Producto,
-    Stock Disponible. Devuelve bytes UTF-8."""
+    Stock Disponible. Opcional: 'En Tránsito' y 'Fechas Tránsito' — si
+    existen, se muestra una línea extra con las cantidades en camino y
+    las fechas tentativas. Devuelve bytes UTF-8."""
     from html import escape as _esc
     _logo = _logo_data_uri()
     _now_txt = _now_ec().strftime("%d/%m/%Y %H:%M GMT-5")
@@ -1613,6 +1781,9 @@ def to_html_mobile(df, fecha_corte_txt):
     _n_pos   = int((df["Stock Disponible"] > 0).sum())
     _n_zero  = int((df["Stock Disponible"] == 0).sum())
     _n_neg   = int((df["Stock Disponible"] < 0).sum())
+    _has_transito = "En Tránsito" in df.columns
+    _n_transito = int((df["En Tránsito"] > 0).sum()) if _has_transito else 0
+    _u_transito = int(df["En Tránsito"].sum()) if _has_transito else 0
 
     _cards = []
     for _, row in df.iterrows():
@@ -1620,18 +1791,36 @@ def to_html_mobile(df, fecha_corte_txt):
         _name = _esc(str(row["Nombre Producto"]))
         _stk  = int(row["Stock Disponible"])
         _cls  = "pos" if _stk > 0 else ("neg" if _stk < 0 else "zero")
-        _srch = _esc((str(row["SKU"]) + " " + str(row["Nombre Producto"]))
+        _tr_qty = int(row["En Tránsito"]) if _has_transito else 0
+        _tr_fechas = _esc(str(row.get("Fechas Tránsito",""))) if _has_transito else ""
+        _srch_extra = (" " + str(row.get("Fechas Tránsito",""))).lower() if _has_transito else ""
+        _srch = _esc((str(row["SKU"]) + " " + str(row["Nombre Producto"]) + _srch_extra)
                      .lower())
+        _transito_html = ""
+        if _tr_qty > 0:
+            _transito_html = (
+                f'<div class="transito">🚢 En tránsito: '
+                f'<b>{_tr_qty:,}</b> u'
+                f'{(" · " + _tr_fechas) if _tr_fechas else ""}'
+                f'</div>'
+            )
         _cards.append(
             f'<div class="sku" data-search="{_srch}">'
             f'<div class="sku-info">'
             f'<div class="sku-code">{_sku}</div>'
             f'<div class="sku-name">{_name}</div>'
+            f'{_transito_html}'
             f'</div>'
             f'<div class="stock {_cls}">{_stk:,}</div>'
             f'</div>'
         )
     _logo_tag = (f'<img src="{_logo}" alt="AutoSky">' if _logo else '')
+    _transito_summary = ""
+    if _has_transito and _u_transito > 0:
+        _transito_summary = (
+            f'<div class="card tr"><strong>{_u_transito:,}</strong>'
+            f'<span>En tránsito ({_n_transito} SKU)</span></div>'
+        )
 
     html = f"""<!DOCTYPE html>
 <html lang="es"><head>
@@ -1658,6 +1847,7 @@ def to_html_mobile(df, fecha_corte_txt):
   .summary .card.zero strong{{color:#94a3b8}}
   .summary .card.neg strong{{color:#dc2626}}
   .summary .card.tot strong{{color:#0ea5e9}}
+  .summary .card.tr strong{{color:#b45309}}
   .summary span{{font-size:11px;color:#64748b;text-transform:uppercase;
                  letter-spacing:.5px;margin-top:4px;display:block}}
   .search{{position:sticky;top:0;z-index:10;background:#f0f9ff;
@@ -1675,6 +1865,10 @@ def to_html_mobile(df, fecha_corte_txt):
   .sku-name{{color:#475569;font-size:13px;margin-top:2px;
              overflow:hidden;text-overflow:ellipsis;
              display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
+  .transito{{color:#b45309;font-size:11.5px;margin-top:4px;
+             background:#fef3c7;padding:3px 7px;border-radius:6px;
+             display:inline-block;font-weight:500}}
+  .transito b{{font-weight:700}}
   .stock{{font-size:22px;font-weight:700;padding:0 4px;min-width:60px;
           text-align:right;line-height:1}}
   .stock.pos{{color:#059669}}
@@ -1699,6 +1893,7 @@ def to_html_mobile(df, fecha_corte_txt):
       <div class="card zero"><strong>{_n_zero}</strong><span>En cero</span></div>
       <div class="card neg"><strong>{_n_neg}</strong><span>Negativo</span></div>
       <div class="card tot"><strong>{_n_total}</strong><span>Total</span></div>
+      {_transito_summary}
     </div>
     <div class="search">
       <input type="text" id="q" placeholder="🔍 Buscar SKU o producto…"
@@ -2610,8 +2805,8 @@ _perf("main_kpis_done")
 
 # ── Pestañas ─────────────────────────────────────────────────────
 tabs=st.tabs(["🏪 Inv×Bodega","🔍 Detalle SKU","📊 SKU×Bodega","👥 Muestras",
-              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","🔍 Auditoría","📤 Exportar Portal"])
-(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_AUD,T_EXP)=tabs
+              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","📦 Importación","🔍 Auditoría","📤 Exportar Portal"])
+(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_IMP,T_AUD,T_EXP)=tabs
 _perf("tabs_defined")
 
 excl_s=list(st.session_state.excluded_skus)
@@ -2779,7 +2974,8 @@ def _render_tab_sku():
         _unit_cols = ["Compras","Dev. Proveedor","Ventas","Dev. Cliente",
                       "Baja Inv.",
                       "Muestras Env.","Muestras Dev.",
-                      "Stock Disponible","Stock Muestras","Stock Total"]
+                      "Stock Disponible","Stock Muestras","Stock Total",
+                      "En Tránsito"]
         for _uc in _unit_cols:
             if _uc in df.columns:
                 df[_uc] = df[_uc].fillna(0).astype(int)
@@ -2806,6 +3002,20 @@ def _render_tab_sku():
             + _safe(df,"Dev. Cliente")
         ).astype(int)
         df["Δ vs Stock"] = (df["✓ Cuadre"] - _safe(df,"Stock Total")).astype(int)
+
+        # ── Enriquecer con importaciones (columnas informativas) ─
+        # Añade "En Tránsito" (u en estado INGRESADA) y "Fechas Tránsito"
+        # (fechas tentativas formateadas). NO modifica Stock Disponible aquí
+        # — ese se mantiene puramente contable para preservar el cuadre.
+        _imp_agg_det = _aggregate_importaciones(_get_shared_importaciones()["df"])
+        if _imp_agg_det:
+            df["En Tránsito"]     = df["Código Producto"].astype(str).map(
+                lambda s: _imp_agg_det.get(s, {}).get("en_transito", 0)).astype(int)
+            df["Fechas Tránsito"] = df["Código Producto"].astype(str).map(
+                lambda s: _imp_agg_det.get(s, {}).get("fechas_txt", ""))
+        else:
+            df["En Tránsito"]     = 0
+            df["Fechas Tránsito"] = ""
 
         # Multiselect predictivo con filtro estricto de substring
         _sk_opts_df = df[["Código Producto","Nombre Producto"]].drop_duplicates()
@@ -2853,6 +3063,7 @@ def _render_tab_sku():
             "Compras","Dev. Proveedor","Baja Inv.",
             "Ventas","Dev. Cliente",
             "Stock Disponible","Stock Total",
+            "En Tránsito","Fechas Tránsito",
             "✓ Cuadre","Δ vs Stock",
             "Stock Muestras",
         ]
@@ -2863,7 +3074,8 @@ def _render_tab_sku():
                   legend="<b>✓ Cuadre</b> = Compras − Dev.Proveedor − <b>Baja Inv.</b> − Ventas + Dev.Cliente &nbsp;·&nbsp; "
                          "<b>Δ vs Stock</b> = Cuadre − Stock Total (0 = correcto) &nbsp;·&nbsp; "
                          "<b>Baja Inv.</b>: EGR con Descripción «BAJA DE INVENTARIO» (merma, deterioro, obsoleto) &nbsp;·&nbsp; "
-                         "<b>Stock Muestras</b>: informativo, transferencias internas")
+                         "<b>Stock Muestras</b>: informativo, transferencias internas &nbsp;·&nbsp; "
+                         "<b>En Tránsito</b>: importaciones en estado INGRESADA (informativo — no afecta Stock ni Cuadre)")
 
         st.markdown("")
         # ── Tabla Valores Financieros ─────────────────────────────
@@ -4652,6 +4864,17 @@ def _render_resumen_fragment():
                         _persist_custom_ubic(_lst)
                         _summary.append(
                             f"📍 Ubicaciones custom: {len(_lst)} restauradas")
+                    if "importaciones.xlsx" in _names:
+                        with _in.open("importaciones.xlsx") as _fh:
+                            _df_imp_in = pd.read_excel(_fh)
+                        for _c in _IMP_COLS:
+                            if _c not in _df_imp_in.columns: _df_imp_in[_c] = ""
+                        _df_imp_in = _df_imp_in[_IMP_COLS]
+                        _imp_st = _get_shared_importaciones()
+                        _imp_st["df"] = _df_imp_in
+                        _persist_importaciones(_df_imp_in)
+                        _summary.append(
+                            f"📦 Importaciones: {len(_df_imp_in):,} registros restaurados")
                     if _summary:
                         st.success("✅ Restaurado:\n\n" +
                                     "\n".join(f"- {s}" for s in _summary))
@@ -4662,7 +4885,8 @@ def _render_resumen_fragment():
                         st.warning(
                             "El ZIP no contenía ninguno de los archivos "
                             "esperados (toma_fisica_rapida.xlsx, "
-                            "filtros_config.json, ubicaciones_custom.json).")
+                            "filtros_config.json, ubicaciones_custom.json, "
+                            "importaciones.xlsx).")
                 except Exception as _ex:
                     st.error(f"Error al restaurar: {_ex}")
         return
@@ -4775,19 +4999,25 @@ def _render_resumen_fragment():
             _zf.writestr("ubicaciones_custom.json", json.dumps({
                 "ubicaciones": list(_c["list"]),
             }, ensure_ascii=False, indent=2))
+            # Importaciones (pedidos al proveedor — todos los estados)
+            _imp_back = _get_shared_importaciones()["df"]
+            if not _imp_back.empty:
+                _zf.writestr("importaciones.xlsx", to_xl(_imp_back))
         _zip_bytes = _zip_buf.getvalue()
 
         _n_skus_excl = len(_get_shared_filtros()["excluded_skus"])
         _n_wh_excl   = len(_get_shared_filtros()["excluded_warehouses"])
         _n_custom    = len(_get_custom_ubic()["list"])
         _n_hist      = len(rap_df)
+        _n_imp       = len(_get_shared_importaciones()["df"])
 
         st.markdown(
             f"**Contenido del backup:**\n\n"
             f"- 📋 **Historial de toma física**: {_n_hist:,} filas\n"
             f"- 🚫 **SKUs excluidos**: {_n_skus_excl}\n"
             f"- 🏪 **Bodegas excluidas**: {_n_wh_excl}\n"
-            f"- 📍 **Ubicaciones custom**: {_n_custom}"
+            f"- 📍 **Ubicaciones custom**: {_n_custom}\n"
+            f"- 📦 **Importaciones**: {_n_imp:,} registros"
         )
 
         _fecha_zip = _now_ec().strftime("%Y%m%d_%H%M")
@@ -4843,6 +5073,18 @@ def _render_resumen_fragment():
                         _c["list"] = _lst
                         _persist_custom_ubic(_lst)
                         _summary.append(f"📍 Ubicaciones custom: {len(_lst)} restauradas")
+
+                    # Importaciones
+                    if "importaciones.xlsx" in _names:
+                        with _in.open("importaciones.xlsx") as _fh:
+                            _df_imp_in = pd.read_excel(_fh)
+                        for _c in _IMP_COLS:
+                            if _c not in _df_imp_in.columns: _df_imp_in[_c] = ""
+                        _df_imp_in = _df_imp_in[_IMP_COLS]
+                        _imp_st = _get_shared_importaciones()
+                        _imp_st["df"] = _df_imp_in
+                        _persist_importaciones(_df_imp_in)
+                        _summary.append(f"📦 Importaciones: {len(_df_imp_in):,} registros restaurados")
 
                     if _summary:
                         st.success("✅ Restaurado:\n\n" + "\n".join(f"- {s}" for s in _summary))
@@ -5529,6 +5771,341 @@ with T_PHY:
     with p3:
         _render_comparacion_fragment()
 
+# ══ TAB IMPORTACIÓN ════════════════════════════════════════════
+@_fragment
+def _render_tab_imp():
+    """Gestión de pedidos al proveedor (importaciones).
+
+    Tres estados del ciclo de vida del embarque:
+      INGRESADA → el pedido aún no llega (aparece en reportes como "EN TRÁNSITO")
+      LLEGADA   → ya está en bodega pero Contifico aún no lo registra
+                  (se suma al Stock Disponible para que los reportes ejecutivos
+                  reflejen el stock real, no el contable)
+      PROCESADA → Contifico ya lo tiene en el Excel consolidado; el registro
+                  deja de influir en cualquier cálculo (archivo histórico)
+
+    Cada embarque es una fila independiente; las entregas parciales se modelan
+    creando varias filas con el mismo `Pedido` (PO)."""
+    eng = st.session_state.engine
+    imp_state = _get_shared_importaciones()
+    imp_df    = imp_state["df"]
+
+    st.markdown("### 📦 Importación de mercadería")
+    st.caption(
+        "Pedidos al proveedor: en tránsito, llegados a bodega (aún no en "
+        "Contifico) y procesados. Los estados INGRESADA y LLEGADA se reflejan "
+        "en los reportes ejecutivos (pestaña **Exportar Portal**). Las "
+        "entregas parciales se registran como filas separadas con el mismo "
+        "número de Pedido."
+    )
+
+    # ── KPIs superiores ─────────────────────────────────────────
+    _n_ingr = int((imp_df["Estado"].astype(str).str.upper() == "INGRESADA").sum())
+    _n_lleg = int((imp_df["Estado"].astype(str).str.upper() == "LLEGADA").sum())
+    _n_proc = int((imp_df["Estado"].astype(str).str.upper() == "PROCESADA").sum())
+    _u_ingr = int(pd.to_numeric(imp_df.loc[imp_df["Estado"].astype(str).str.upper()=="INGRESADA","Cantidad"], errors="coerce").fillna(0).sum())
+    _u_lleg = int(pd.to_numeric(imp_df.loc[imp_df["Estado"].astype(str).str.upper()=="LLEGADA","Cantidad"], errors="coerce").fillna(0).sum())
+
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("🚢 En tránsito", f"{_n_ingr:,}", f"{_u_ingr:,} u")
+    k2.metric("📦 En bodega (sin Contifico)", f"{_n_lleg:,}", f"{_u_lleg:,} u")
+    k3.metric("✅ Procesadas", f"{_n_proc:,}")
+    k4.metric("Registros totales", f"{len(imp_df):,}")
+
+    # Listas para autocompletado / dropdowns
+    _known_skus   = []
+    _sku_name_map = {}
+    if eng is not None and eng.raw_df is not None and not eng.raw_df.empty:
+        _known_skus = sorted(set(eng.raw_df["Código Producto"].dropna().astype(str)))
+        # Mapa SKU→Nombre desde raw_df (última ocurrencia gana)
+        _raw_valid = eng.raw_df.dropna(subset=["Código Producto"])
+        for _s, _grp in _raw_valid.groupby(_raw_valid["Código Producto"].astype(str)):
+            _nm = _grp["Nombre Producto"].dropna().astype(str)
+            _sku_name_map[_s] = _nm.iloc[0] if len(_nm) else ""
+
+    _prev_proveedores = sorted(set(
+        imp_df["Proveedor"].dropna().astype(str).str.strip().replace("", pd.NA).dropna()
+    ))
+    _prev_pedidos = sorted(set(
+        imp_df["Pedido"].dropna().astype(str).str.strip().replace("", pd.NA).dropna()
+    ))
+
+    # ── Formulario: Nueva importación ───────────────────────────
+    with st.expander("➕ Nueva importación", expanded=(imp_df.empty)):
+        with st.form("imp_new_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                _f_pedido = st.text_input("Pedido / PO / Ref",
+                    placeholder="Ej: PO-2026-042",
+                    help="Número de orden de compra al proveedor. Usa el mismo para entregas parciales del mismo pedido.")
+                _f_sku_sel = st.selectbox(
+                    "SKU (elegir registrado)",
+                    options=[""] + _known_skus,
+                    format_func=lambda s: (f"{s} — {_sku_name_map.get(s,'')}"
+                                             if s and _sku_name_map.get(s) else (s or "— seleccionar —")),
+                    key="imp_f_sku_sel")
+                _f_sku_nuevo = st.text_input(
+                    "o SKU nuevo (no está en Contifico aún)",
+                    placeholder="Sólo si es un SKU que aún no existe en el consolidado")
+                _f_nombre = st.text_input(
+                    "Nombre Producto (opcional)",
+                    help="Se autocompleta del consolidado si elegiste un SKU "
+                         "registrado y dejas este campo vacío. Úsalo sólo si "
+                         "necesitas sobreescribir el nombre.")
+            with c2:
+                _f_proveedor = st.text_input("Proveedor",
+                    placeholder="Nombre del proveedor")
+                if _prev_proveedores:
+                    st.caption(f"💡 Anteriores: {', '.join(_prev_proveedores[:6])}"
+                               + (" …" if len(_prev_proveedores) > 6 else ""))
+                _f_cant = st.number_input("Cantidad", min_value=1, step=1, value=1)
+                _f_tipo = st.radio("Tipo de embarque", _IMP_TIPOS,
+                                   horizontal=True, key="imp_f_tipo")
+                _f_fecha = st.date_input("Fecha tentativa de llegada",
+                    value=_now_ec().date() + timedelta(days=30))
+            _f_obs = st.text_area("Observaciones (opcional)",
+                                    placeholder="Notas internas, condiciones, etc.",
+                                    height=70)
+            _submit = st.form_submit_button("➕ Registrar importación",
+                                              type="primary", width='stretch')
+            if _submit:
+                _sku_final = (_f_sku_nuevo or _f_sku_sel or "").strip()
+                if not _sku_final:
+                    st.error("Debes especificar un SKU (elegir o escribir uno nuevo).")
+                elif _f_cant <= 0:
+                    st.error("La cantidad debe ser mayor a 0.")
+                else:
+                    _new_id = _next_import_id(imp_df)
+                    _new_row = {
+                        "ID":                _new_id,
+                        "Pedido":            (_f_pedido or "").strip(),
+                        "Proveedor":         (_f_proveedor or "").strip(),
+                        "Código Producto":   _sku_final,
+                        "Nombre Producto":   (_f_nombre or _sku_name_map.get(_sku_final, "") or "").strip(),
+                        "Cantidad":          int(_f_cant),
+                        "Tipo Embarque":     _f_tipo,
+                        "Fecha Tentativa":   _f_fecha.strftime("%Y-%m-%d"),
+                        "Estado":            "INGRESADA",
+                        "Fecha Registro":    _now_ec().strftime("%Y-%m-%d %H:%M"),
+                        "Fecha Llegada Real": "",
+                        "Observaciones":     (_f_obs or "").strip(),
+                    }
+                    _new_df = pd.concat(
+                        [imp_df, pd.DataFrame([_new_row], columns=_IMP_COLS)],
+                        ignore_index=True)
+                    imp_state["df"] = _new_df
+                    _persist_importaciones(_new_df)
+                    log(f"Importación creada {_new_id}: {_sku_final} × {_f_cant} ({_f_tipo})")
+                    st.success(f"✅ Registrada {_new_id} — {_sku_final} × {int(_f_cant)} ({_f_tipo})")
+                    _rerun_frag()
+
+    st.divider()
+
+    # Helper local: renderiza una sección de estado con data_editor editable,
+    # selección de filas vía checkbox y botones de acción masiva.
+    def _render_section(estado, titulo, accion_siguiente, help_txt,
+                          editable_cantidad=True, editable_otros=True):
+        _mask = imp_df["Estado"].astype(str).str.upper() == estado
+        _sub  = imp_df[_mask].copy()
+        st.markdown(f"#### {titulo}  ·  {len(_sub)} registro(s)")
+        if help_txt:
+            st.caption(help_txt)
+        if _sub.empty:
+            st.info("Sin registros en este estado.")
+            return
+
+        # Normalizar para display
+        _sub["Cantidad"] = pd.to_numeric(_sub["Cantidad"], errors="coerce").fillna(0).astype(int)
+        for _c in ("Pedido","Proveedor","Código Producto","Nombre Producto",
+                    "Tipo Embarque","Fecha Tentativa","Observaciones",
+                    "Fecha Llegada Real","Fecha Registro"):
+            _sub[_c] = _sub[_c].fillna("").astype(str)
+        _sub.insert(0, "Sel", False)
+
+        # Columnas visibles por estado (Fecha Llegada Real sólo relevante en LLEGADA/PROCESADA)
+        _show_cols = ["Sel","ID","Pedido","Proveedor","Código Producto",
+                      "Nombre Producto","Cantidad","Tipo Embarque",
+                      "Fecha Tentativa"]
+        if estado in ("LLEGADA","PROCESADA"):
+            _show_cols.append("Fecha Llegada Real")
+        _show_cols += ["Observaciones","Fecha Registro"]
+
+        # Configuración de columnas: editables sólo donde aplique
+        _col_cfg = {
+            "Sel": st.column_config.CheckboxColumn("✓", width="small",
+                     help="Marca las filas a las que aplicar la acción masiva de abajo"),
+            "ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
+            "Pedido":          st.column_config.TextColumn("Pedido / PO",
+                                disabled=not editable_otros),
+            "Proveedor":       st.column_config.TextColumn("Proveedor",
+                                disabled=not editable_otros),
+            "Código Producto": st.column_config.TextColumn("SKU",
+                                disabled=not editable_otros),
+            "Nombre Producto": st.column_config.TextColumn("Nombre",
+                                disabled=not editable_otros),
+            "Cantidad":        st.column_config.NumberColumn("Cantidad",
+                                min_value=0, step=1, format="%d",
+                                disabled=not editable_cantidad),
+            "Tipo Embarque":   st.column_config.SelectboxColumn("Tipo",
+                                options=_IMP_TIPOS, disabled=not editable_otros),
+            "Fecha Tentativa": st.column_config.TextColumn("F. Tentativa",
+                                disabled=not editable_otros),
+            "Fecha Llegada Real": st.column_config.TextColumn("F. Llegada",
+                                disabled=(estado == "PROCESADA")),
+            "Observaciones":   st.column_config.TextColumn("Observaciones",
+                                disabled=(estado == "PROCESADA"), width="medium"),
+            "Fecha Registro":  st.column_config.TextColumn("F. Registro",
+                                disabled=True, width="small"),
+        }
+
+        _edited = st.data_editor(
+            _sub[_show_cols], key=f"imp_ed_{estado}",
+            width='stretch', hide_index=True,
+            column_config=_col_cfg, num_rows="fixed",
+            disabled=(estado == "PROCESADA"))
+
+        _ids_sel = [str(r["ID"]) for _, r in _edited.iterrows() if bool(r.get("Sel"))]
+        _n_sel = len(_ids_sel)
+
+        # Guardar cambios editados — compara vs original y actualiza imp_df global
+        _changed = False
+        _orig_by_id = _sub.set_index("ID")
+        _edit_by_id = _edited.set_index("ID")
+        _editable_fields = []
+        if editable_otros:
+            _editable_fields += ["Pedido","Proveedor","Código Producto",
+                                   "Nombre Producto","Tipo Embarque",
+                                   "Fecha Tentativa"]
+        if editable_cantidad:
+            _editable_fields.append("Cantidad")
+        if estado != "PROCESADA":
+            _editable_fields += ["Fecha Llegada Real","Observaciones"]
+
+        for _id in _edit_by_id.index:
+            if _id not in _orig_by_id.index: continue
+            for _col in _editable_fields:
+                if _col not in _edit_by_id.columns: continue
+                _v_new = _edit_by_id.at[_id, _col]
+                _v_old = _orig_by_id.at[_id, _col]
+                if str(_v_new) != str(_v_old):
+                    # Aplicar cambio al DataFrame global
+                    _row_idx = imp_df.index[imp_df["ID"] == _id]
+                    if len(_row_idx) > 0:
+                        imp_df.at[_row_idx[0], _col] = (
+                            int(_v_new) if _col == "Cantidad" else _v_new)
+                    _changed = True
+
+        # Botones de acción
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            _btn_save = st.button(
+                f"💾 Guardar cambios editados", key=f"imp_save_{estado}",
+                width='stretch', disabled=not _changed,
+                type=("primary" if _changed else "secondary"))
+        with b2:
+            _btn_adv = st.button(
+                f"{accion_siguiente[1]}  ({_n_sel} sel.)" if accion_siguiente else "—",
+                key=f"imp_adv_{estado}", width='stretch',
+                disabled=(accion_siguiente is None or _n_sel == 0),
+                type=("primary" if _n_sel else "secondary"),
+                help=(accion_siguiente[2] if accion_siguiente else None))
+        with b3:
+            _btn_del = st.button(
+                f"🗑 Eliminar  ({_n_sel} sel.)", key=f"imp_del_{estado}",
+                width='stretch', disabled=(_n_sel == 0))
+
+        if _btn_save and _changed:
+            imp_state["df"] = imp_df
+            _persist_importaciones(imp_df)
+            log(f"Importaciones: {estado} — guardados cambios inline")
+            st.success("✅ Cambios guardados")
+            _rerun_frag()
+
+        if _btn_adv and accion_siguiente and _ids_sel:
+            _next_state = accion_siguiente[0]
+            _fecha_real_default = _now_ec().strftime("%Y-%m-%d")
+            _mask2 = imp_df["ID"].isin(_ids_sel)
+            imp_df.loc[_mask2, "Estado"] = _next_state
+            if _next_state == "LLEGADA":
+                # Asignar Fecha Llegada Real si está vacía
+                _empty = _mask2 & (imp_df["Fecha Llegada Real"].fillna("").astype(str) == "")
+                imp_df.loc[_empty, "Fecha Llegada Real"] = _fecha_real_default
+            imp_state["df"] = imp_df
+            _persist_importaciones(imp_df)
+            log(f"Importaciones: {len(_ids_sel)} registros → {_next_state}")
+            st.success(f"✅ {len(_ids_sel)} registro(s) pasaron a {_next_state}")
+            _rerun_frag()
+
+        if _btn_del and _ids_sel:
+            _before = len(imp_df)
+            imp_df = imp_df[~imp_df["ID"].isin(_ids_sel)].reset_index(drop=True)
+            imp_state["df"] = imp_df
+            _persist_importaciones(imp_df)
+            log(f"Importaciones: eliminados {_before - len(imp_df)} registro(s)")
+            st.success(f"🗑 Eliminados {_before - len(imp_df)} registro(s)")
+            _rerun_frag()
+
+    # ── Sección A: INGRESADAS ───────────────────────────────────
+    _render_section(
+        estado="INGRESADA",
+        titulo="🚢 INGRESADAS — en tránsito (suman a EN TRÁNSITO en reportes)",
+        accion_siguiente=("LLEGADA", "📦 Marcar como LLEGADA",
+                           "Las filas seleccionadas pasan a 'en bodega'; "
+                           "Fecha Llegada Real se auto-fija en hoy (editable)."),
+        help_txt="Pedidos aún no recibidos. Todos los campos son editables "
+                 "(incluye SKU y cantidad, por si se reajusta o divide en "
+                 "parciales). Para dividir una entrega parcial: edita la "
+                 "cantidad aquí y crea un nuevo registro con el mismo Pedido.",
+        editable_cantidad=True, editable_otros=True)
+
+    st.divider()
+
+    # ── Sección B: LLEGADAS ─────────────────────────────────────
+    _render_section(
+        estado="LLEGADA",
+        titulo="📦 LLEGADAS — en bodega (aún no en Contifico, suman a Stock Disponible)",
+        accion_siguiente=("PROCESADA", "✅ Marcar como PROCESADA",
+                           "Las filas seleccionadas pasan a histórico y "
+                           "dejan de influir en los reportes. Úsalo cuando "
+                           "Contifico ya haya registrado el ingreso."),
+        help_txt="Mercadería ya física en bodega. Sólo la cantidad es "
+                 "editable (por faltantes/robos/errores). Márcala como "
+                 "PROCESADA cuando el ingreso aparezca en el consolidado "
+                 "de Contifico — a partir de ese punto deja de sumar al stock.",
+        editable_cantidad=True, editable_otros=False)
+
+    st.divider()
+
+    # ── Sección C: PROCESADAS (archivo) ─────────────────────────
+    _render_section(
+        estado="PROCESADA",
+        titulo="✅ PROCESADAS — archivo histórico (no influyen en reportes)",
+        accion_siguiente=None,
+        help_txt="Registros ya reflejados en Contifico. Se mantienen para "
+                 "trazabilidad pero no afectan Stock Disponible ni En Tránsito. "
+                 "Sólo puedes eliminarlos.",
+        editable_cantidad=False, editable_otros=False)
+
+    st.divider()
+
+    # ── Export historial ────────────────────────────────────────
+    with st.expander("📥 Exportar historial completo"):
+        st.caption("Descarga el registro de todas las importaciones (todos los estados).")
+        if not imp_df.empty:
+            _stamp = _now_ec().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "📥 importaciones.xlsx",
+                to_xl(imp_df.sort_values(["Estado","Fecha Registro"],
+                                           ascending=[True, False])),
+                f"importaciones_{_stamp}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch', key="imp_export_all")
+        else:
+            st.info("Aún no hay registros para exportar.")
+
+with T_IMP:
+    _render_tab_imp()
+
 # ══ TAB 10 AUDITORÍA ═══════════════════════════════════════════
 @_fragment
 def _render_tab_aud():
@@ -5900,33 +6477,46 @@ def _render_tab_exp():
     st.caption(
         "Exportaciones bajo demanda con datos de Stock Disponible "
         "(solo Bodega Principal). Los SKUs excluidos en el panel lateral "
-        "se omiten automáticamente."
+        "se omiten automáticamente. El Stock Disponible incluye las "
+        "importaciones ya en bodega (estado LLEGADA); las importaciones "
+        "aún en tránsito se muestran en la columna **En Tránsito**."
     )
 
-    # ── Base: sku_summary (sin fecha por ítem — el corte está en el header) ─
+    # ── Base: sku_summary enriquecido con importaciones ──────────
+    # - Stock Disponible += cantidades en estado LLEGADA (ya en bodega)
+    # - Columna "En Tránsito" = cantidades en estado INGRESADA
+    # - Columna "Fechas Tránsito" = fechas tentativas formateadas
     base = r.sku_summary[["Código Producto", "Nombre Producto",
                           "Stock Disponible"]].copy()
     base["Stock Disponible"] = base["Stock Disponible"].fillna(0).astype(int)
-    base = base.sort_values("Código Producto").reset_index(drop=True)
+    _imp_df_exp = _get_shared_importaciones()["df"]
+    base = _apply_importaciones_to_sku_base(
+        base, _imp_df_exp,
+        excluded_skus=st.session_state.get("excluded_skus", set()))
 
     # Fecha global "actualizado hasta" (último movimiento del dataset filtrado)
     _global_last = r.filtered["Fecha"].max()
     _gl_txt = (pd.to_datetime(_global_last).strftime("%d/%m/%Y")
                if pd.notna(_global_last) else "—")
 
-    k1, k2, k3 = st.columns(3)
+    _en_transito_total = int(base["En Tránsito"].sum()) if "En Tránsito" in base.columns else 0
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric("SKUs exportables", f"{len(base):,}")
     k2.metric("Con stock > 0",
               f"{int((base['Stock Disponible'] > 0).sum()):,}")
-    k3.metric("Actualizado hasta", _gl_txt)
+    k3.metric("En tránsito (total u)", f"{_en_transito_total:,}")
+    k4.metric("Actualizado hasta", _gl_txt)
 
     # ── Sección A: datos para portal web ─────────────────────────────
     st.markdown("#### 🌐 Datos para portal web")
     st.caption(
-        "Dos columnas: SKU · Stock Disponible. La primera línea del CSV/TXT "
-        "contiene la fecha de corte (último movimiento de toda la data)."
+        "Columnas: SKU · Stock Disponible · En Tránsito · Fechas Tránsito. "
+        "La primera línea del CSV/TXT contiene la fecha de corte (último "
+        "movimiento de toda la data). 'En Tránsito' suma las cantidades "
+        "de importaciones en estado INGRESADA."
     )
-    df_portal = base[["Código Producto", "Stock Disponible"]].rename(
+    df_portal = base[["Código Producto", "Stock Disponible",
+                        "En Tránsito", "Fechas Tránsito"]].rename(
         columns={"Código Producto": "SKU"})
 
     st.dataframe(df_portal, width='stretch', hide_index=True, height=320)
@@ -6009,12 +6599,13 @@ def _render_tab_exp():
     # ── Sección B: PDF ejecutivo vertical A4 (una sola hoja) ────────
     st.markdown("#### 📄 PDF ejecutivo")
     st.caption(
-        "A4 vertical, 3 columnas: SKU · Nombre Producto · Stock Disponible. "
-        "El encabezado muestra la fecha de corte (último registro) para "
-        "indicar hasta qué punto están actualizados los datos."
+        "A4 vertical: SKU · Nombre Producto · Stock Disponible · En Tránsito · "
+        "Fechas Tránsito. El encabezado muestra la fecha de corte (último "
+        "registro) para indicar hasta qué punto están actualizados los datos."
     )
     df_ejec = base[["Código Producto", "Nombre Producto",
-                    "Stock Disponible"]].rename(
+                    "Stock Disponible", "En Tránsito",
+                    "Fechas Tránsito"]].rename(
         columns={"Código Producto": "SKU"})
 
     st.dataframe(df_ejec, width='stretch', hide_index=True, height=320)
