@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.12.1"
+APP_VERSION = "v4.12.2"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.12.1":
+if st.session_state.get("_app_version") != "v4.12.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.12.1"
+    st.session_state["_app_version"] = "v4.12.2"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -2482,6 +2482,11 @@ def _render_tab_sku():
     if r is None: st.info("Ejecute el análisis.")
     else:
         df=r.sku_summary.copy()
+
+        # Dropear columnas no relevantes para el reporte (gana espacio
+        # horizontal y evita solapamiento con ~19 columnas)
+        for _drop in ("Categoría Producto",):
+            if _drop in df.columns: df=df.drop(columns=[_drop])
 
         # ── Renombrar columnas del engine a labels legibles ───────
         _ren = {
