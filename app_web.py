@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.4.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.5 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.4.1"
+APP_VERSION = "v4.5"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.4.1":
+if st.session_state.get("_app_version") != "v4.5":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.4.1"
+    st.session_state["_app_version"] = "v4.5"
 
-st.set_page_config(page_title="Inventario v4.4.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.5", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -3259,6 +3259,39 @@ with T_KDX:
 # ── Fragment: Toma Física por Ubicación (tabla tipo planilla) ───
 # Aislado en @st.fragment: las ediciones de celdas solo re-ejecutan esta
 # función, no toda la app.
+def _safe_eval(expr):
+    """Evalúa una expresión aritmética segura (+ − × ÷ paréntesis y decimales).
+    NO permite nombres, atributos, funciones, imports. Lanza ValueError si falla."""
+    import ast, operator
+    _OPS = {
+        ast.Add: operator.add, ast.Sub: operator.sub,
+        ast.Mult: operator.mul, ast.Div: operator.truediv,
+        ast.USub: operator.neg, ast.UAdd: operator.pos,
+        ast.Pow: operator.pow,
+    }
+    clean = str(expr).replace("×","*").replace("÷","/").replace(",",".").strip()
+    if not clean:
+        raise ValueError("expresión vacía")
+    try:
+        tree = ast.parse(clean, mode="eval")
+    except SyntaxError as ex:
+        raise ValueError(f"sintaxis inválida: {ex}")
+    def _ev(n):
+        if isinstance(n, ast.Expression): return _ev(n.body)
+        if isinstance(n, ast.Constant):
+            if isinstance(n.value, (int, float)): return n.value
+            raise ValueError(f"valor no permitido: {n.value!r}")
+        if isinstance(n, ast.BinOp):
+            op = _OPS.get(type(n.op))
+            if op is None: raise ValueError(f"operador no permitido: {type(n.op).__name__}")
+            return op(_ev(n.left), _ev(n.right))
+        if isinstance(n, ast.UnaryOp):
+            op = _OPS.get(type(n.op))
+            if op is None: raise ValueError(f"operador unario no permitido")
+            return op(_ev(n.operand))
+        raise ValueError(f"elemento no permitido: {type(n).__name__}")
+    return _ev(tree)
+
 def _build_toma_table(eng, rap_df, ubicacion):
     """Construye DataFrame con TODOS los SKUs + su cantidad anterior para la ubicación dada.
     Respeta la exclusión global de SKUs: los SKUs en eng.excluded_skus no aparecen
@@ -3297,6 +3330,43 @@ def _render_toma_fragment():
 
     all_ubic = _get_all_ubic()
 
+    # ── Modo pantalla completa (oculta sidebar + banner + KPIs + barra tabs) ──
+    if "toma_fullscreen" not in st.session_state:
+        st.session_state["toma_fullscreen"] = False
+
+    if st.session_state["toma_fullscreen"]:
+        # CSS que oculta todo excepto el contenido de la pestaña actual.
+        # Se aplica solo mientras el toggle esté activo.
+        st.markdown("""
+        <style>
+        /* Ocultar sidebar */
+        section[data-testid="stSidebar"] { display: none !important; }
+        /* Ocultar banner AutoSky, período, KPIs y aviso de exclusiones */
+        .as-banner,
+        div[style*="📅 PERÍODO DE ANÁLISIS"],
+        .kpi-row,
+        div[style*="Exclusiones globales activas"] { display: none !important; }
+        /* Ocultar la barra de tabs de nivel principal (mantiene las sub-tabs de Toma) */
+        .stTabs > div > [data-baseweb="tab-list"]:first-of-type,
+        .main > div > div > .stTabs > div > [data-baseweb="tab-list"] { display: none !important; }
+        /* Expandir el main area a full width */
+        section[data-testid="stMain"] .block-container,
+        .main .block-container { max-width: 100% !important; padding-left: 1rem !important; padding-right: 1rem !important; }
+        /* Expandir sub-tabs para usar todo el ancho */
+        .stTabs [data-baseweb="tab-panel"] { padding-top: .5rem !important; }
+        </style>
+        """, unsafe_allow_html=True)
+
+    # Toggle fullscreen arriba de todo (esquina superior derecha)
+    _fs_c1, _fs_c2 = st.columns([5, 1])
+    with _fs_c2:
+        _fs_label = "🔙 Salir modo toma" if st.session_state["toma_fullscreen"] else "🖥 Pantalla completa"
+        if st.button(_fs_label, key="toma_fs_btn", use_container_width=True,
+                     help="Oculta sidebar, banner y otras pestañas para conteo sin distracciones. "
+                          "Ideal en celular o tablet."):
+            st.session_state["toma_fullscreen"] = not st.session_state["toma_fullscreen"]
+            _rerun_frag()
+
     # Selector + agregar ubicación
     col_u, col_add = st.columns([3, 1])
     with col_u:
@@ -3333,6 +3403,84 @@ def _render_toma_fragment():
 
     # Key dinámica por ubicación: al cambiar de ubicación, el editor reinicia
     editor_key = f"tu_ed_{sel_ubic}"
+
+    # ── 🧮 Calculadora (expresiones aritméticas para cajas × unidades) ──
+    with st.expander("🧮 Calculadora — aplicar expresión a un SKU"):
+        st.caption(
+            "Útil para cajas × unidades. Ej: `5*33*3+2` = 497. "
+            "Operadores: `+ − × ÷ ( )` y decimales. "
+            "El resultado se aplica al SKU seleccionado en la tabla de arriba."
+        )
+        _calc_codes = table_df["Código Producto"].astype(str).tolist()
+        _calc_names = table_df["Nombre Producto"].astype(str).tolist()
+        _calc_labels = [f"{c} — {n}" for c,n in zip(_calc_codes, _calc_names)]
+        cc1, cc2 = st.columns([3, 2])
+        with cc1:
+            _sel_sku_calc = st.selectbox(
+                "SKU al que aplicar el resultado", _calc_labels,
+                key=f"calc_sku_{sel_ubic}",
+                placeholder="Escribe código o nombre…",
+            )
+        with cc2:
+            _expr = st.text_input(
+                "Expresión (ej: 5*33*3+2)",
+                key=f"calc_expr_{sel_ubic}",
+                placeholder="5*33*3+2",
+            )
+        # Evaluación en vivo + aplicar
+        _result = None; _err = None
+        if _expr and _expr.strip():
+            try:
+                _v = _safe_eval(_expr)
+                # Validar que sea un número finito no negativo
+                import math
+                if math.isnan(_v) or math.isinf(_v):
+                    _err = "resultado no válido (infinito/NaN)"
+                elif _v < 0:
+                    _err = "el resultado debe ser ≥ 0"
+                else:
+                    _result = _v
+            except ValueError as _ex:
+                _err = str(_ex)
+        rc1, rc2 = st.columns([3, 2])
+        with rc1:
+            if _result is not None:
+                st.markdown(
+                    f"<div style='background:#d1fae5;border:1px solid #059669;"
+                    f"border-radius:8px;padding:10px 14px;font-weight:700;"
+                    f"color:#065f46;font-size:18px'>= {_result:g} u</div>",
+                    unsafe_allow_html=True,
+                )
+            elif _err:
+                st.error(f"Error: {_err}")
+            else:
+                st.caption("Escribe una expresión para ver el resultado.")
+        with rc2:
+            _disabled = (_result is None or _sel_sku_calc is None)
+            if st.button("✔ Aplicar al SKU", type="primary",
+                         use_container_width=True,
+                         key=f"calc_apply_{sel_ubic}",
+                         disabled=_disabled):
+                # Obtener el índice del SKU en la tabla del editor
+                _sel_code = _sel_sku_calc.split(" — ")[0]
+                try:
+                    _row_idx = _calc_codes.index(_sel_code)
+                except ValueError:
+                    _row_idx = None
+                if _row_idx is not None:
+                    # Modificar el estado del data_editor inyectando edited_rows
+                    _ed_state = st.session_state.get(editor_key, {}) or {}
+                    _edited_rows = _ed_state.get("edited_rows", {}) if isinstance(_ed_state, dict) else {}
+                    _edited_rows[_row_idx] = {
+                        **(_edited_rows.get(_row_idx, {})),
+                        "Nueva": int(round(_result)),
+                    }
+                    _ed_state["edited_rows"] = _edited_rows
+                    st.session_state[editor_key] = _ed_state
+                    st.success(f"✓ Aplicado {int(round(_result))} u al SKU {_sel_code}")
+                    _rerun_frag()
+
+
     edited = st.data_editor(
         table_df,
         use_container_width=True,
