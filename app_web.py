@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.16.3"
+APP_VERSION = "v4.17.0"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.16.3":
+if st.session_state.get("_app_version") != "v4.17.0":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.16.3"
+    st.session_state["_app_version"] = "v4.17.0"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -5842,72 +5842,179 @@ def _render_tab_imp():
     ))
 
     # ── Formulario: Nueva importación ───────────────────────────
+    # Diseño: cabecera (Pedido/OC + Proveedor) aplica a TODAS las líneas
+    # de la tabla. Cada línea se guarda como un registro independiente con
+    # su propio ID IMP-XXXX, pero compartiendo Pedido + Proveedor. Así un
+    # mismo SKU puede repetirse en 2 líneas con distinto Tipo Embarque
+    # (ej: 40 aéreo + 60 marítimo) o fecha.
     with st.expander("➕ Nueva importación", expanded=(imp_df.empty)):
+        st.caption(
+            "El **Pedido (OC) + Proveedor** son el contenedor del pedido. "
+            "Debajo agregás una fila por cada SKU + tipo de embarque — un "
+            "mismo SKU puede tener 2 filas si viene parte aéreo y parte "
+            "marítimo (o en fechas distintas). Cada línea se registra como "
+            "embarque independiente para permitir llegadas parciales."
+        )
+
         with st.form("imp_new_form", clear_on_submit=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                _f_pedido = st.text_input("Pedido / PO / Ref",
+            # ── Cabecera del pedido ─────────────────────────────
+            ch1, ch2 = st.columns(2)
+            with ch1:
+                _f_pedido = st.text_input(
+                    "📦 Pedido / OC",
                     placeholder="Ej: PO-2026-042",
-                    help="Número de orden de compra al proveedor. Usa el mismo para entregas parciales del mismo pedido.")
-                _f_sku_sel = st.selectbox(
-                    "SKU (elegir registrado)",
-                    options=[""] + _known_skus,
-                    format_func=lambda s: (f"{s} — {_sku_name_map.get(s,'')}"
-                                             if s and _sku_name_map.get(s) else (s or "— seleccionar —")),
-                    key="imp_f_sku_sel")
-                _f_sku_nuevo = st.text_input(
-                    "o SKU nuevo (no está en Contifico aún)",
-                    placeholder="Sólo si es un SKU que aún no existe en el consolidado")
-                _f_nombre = st.text_input(
-                    "Nombre Producto (opcional)",
-                    help="Se autocompleta del consolidado si elegiste un SKU "
-                         "registrado y dejas este campo vacío. Úsalo sólo si "
-                         "necesitas sobreescribir el nombre.")
-            with c2:
-                _f_proveedor = st.text_input("Proveedor",
+                    help="Número de orden de compra al proveedor. Este valor "
+                         "se aplica a todas las líneas registradas abajo.")
+            with ch2:
+                _f_proveedor = st.text_input(
+                    "🏭 Proveedor",
                     placeholder="Nombre del proveedor")
-                if _prev_proveedores:
-                    st.caption(f"💡 Anteriores: {', '.join(_prev_proveedores[:6])}"
-                               + (" …" if len(_prev_proveedores) > 6 else ""))
-                _f_cant = st.number_input("Cantidad", min_value=1, step=1, value=1)
-                _f_tipo = st.radio("Tipo de embarque", _IMP_TIPOS,
-                                   horizontal=True, key="imp_f_tipo")
-                _f_fecha = st.date_input("Fecha tentativa de llegada",
-                    value=_now_ec().date() + timedelta(days=30))
-            _f_obs = st.text_area("Observaciones (opcional)",
-                                    placeholder="Notas internas, condiciones, etc.",
-                                    height=70)
-            _submit = st.form_submit_button("➕ Registrar importación",
-                                              type="primary", width='stretch')
+            if _prev_proveedores:
+                st.caption(f"💡 Proveedores anteriores: "
+                           f"{', '.join(_prev_proveedores[:8])}"
+                           + (" …" if len(_prev_proveedores) > 8 else ""))
+
+            _f_obs_cab = st.text_area(
+                "Observaciones generales del pedido (opcional)",
+                placeholder="Notas que aplican a todo el pedido — ej: "
+                            "condiciones, lead time, etc.",
+                height=60)
+
+            # ── Líneas del pedido (data_editor dinámico) ────────
+            st.markdown("**Líneas del pedido**")
+            _hint_skus = (f"{len(_known_skus)} SKUs registrados en el "
+                          "consolidado — al guardar, si el SKU coincide, "
+                          "el Nombre se autocompleta.") if _known_skus else (
+                          "Aún no hay SKUs cargados del consolidado — "
+                          "completa SKU y Nombre manualmente.")
+            st.caption(f"Usa el botón **➕** de la tabla para agregar filas "
+                       f"(una por línea del pedido). {_hint_skus}")
+
+            # Template vacío: una fila placeholder que el usuario llena o
+            # borra. Con Cantidad=0 la validación filtra la fila vacía al
+            # submit sin requerir que el usuario la elimine manualmente.
+            _default_fecha = _now_ec().date() + timedelta(days=30)
+            _empty_lines = pd.DataFrame([
+                {"SKU": "", "Nombre": "", "Cantidad": 0,
+                 "Tipo Embarque": _IMP_TIPOS[0],
+                 "Fecha Tentativa": _default_fecha,
+                 "Observaciones": ""}
+            ])
+
+            _edit_lines = st.data_editor(
+                _empty_lines,
+                key="imp_new_lines_editor",
+                num_rows="dynamic",
+                width='stretch',
+                hide_index=True,
+                column_config={
+                    "SKU": st.column_config.TextColumn(
+                        "SKU", required=False, width="small",
+                        help="Código del producto. Se autocompleta el "
+                             "Nombre al guardar si está en el consolidado."),
+                    "Nombre": st.column_config.TextColumn(
+                        "Nombre (opcional)", width="medium",
+                        help="Déjalo vacío para auto-rellenar desde el "
+                             "consolidado; complétalo manualmente sólo "
+                             "si el SKU es nuevo."),
+                    "Cantidad": st.column_config.NumberColumn(
+                        "Cantidad", min_value=0, step=1, format="%d",
+                        help="Debe ser mayor a 0 para que la línea se "
+                             "registre. Filas con 0 se ignoran."),
+                    "Tipo Embarque": st.column_config.SelectboxColumn(
+                        "Tipo Embarque", options=_IMP_TIPOS,
+                        help="Marítimo o Aéreo. Para llegadas parciales "
+                             "del mismo SKU, crea 2 filas distintas."),
+                    "Fecha Tentativa": st.column_config.DateColumn(
+                        "Fecha Tentativa", format="DD/MM/YYYY"),
+                    "Observaciones": st.column_config.TextColumn(
+                        "Obs. de línea (opcional)", width="medium"),
+                },
+            )
+
+            _submit = st.form_submit_button(
+                "💾 Registrar importación", type="primary",
+                width='stretch')
+
             if _submit:
-                _sku_final = (_f_sku_nuevo or _f_sku_sel or "").strip()
-                if not _sku_final:
-                    st.error("Debes especificar un SKU (elegir o escribir uno nuevo).")
-                elif _f_cant <= 0:
-                    st.error("La cantidad debe ser mayor a 0.")
+                # Validación
+                _errs = []
+                if not (_f_pedido or "").strip():
+                    _errs.append("Falta **Pedido / OC**.")
+                if not (_f_proveedor or "").strip():
+                    _errs.append("Falta **Proveedor**.")
+
+                _valid = _edit_lines.copy()
+                _valid["SKU"] = _valid["SKU"].fillna("").astype(str).str.strip()
+                _valid["Cantidad"] = pd.to_numeric(
+                    _valid["Cantidad"], errors="coerce").fillna(0).astype(int)
+                _valid = _valid[(_valid["SKU"] != "") & (_valid["Cantidad"] > 0)]
+                if len(_valid) == 0:
+                    _errs.append("Agrega al menos una línea con **SKU** "
+                                 "y **Cantidad** > 0.")
+
+                if _errs:
+                    for _e in _errs: st.error(_e)
                 else:
-                    _new_id = _next_import_id(imp_df)
-                    _new_row = {
-                        "ID":                _new_id,
-                        "Pedido":            (_f_pedido or "").strip(),
-                        "Proveedor":         (_f_proveedor or "").strip(),
-                        "Código Producto":   _sku_final,
-                        "Nombre Producto":   (_f_nombre or _sku_name_map.get(_sku_final, "") or "").strip(),
-                        "Cantidad":          int(_f_cant),
-                        "Tipo Embarque":     _f_tipo,
-                        "Fecha Tentativa":   _f_fecha.strftime("%Y-%m-%d"),
-                        "Estado":            "INGRESADA",
-                        "Fecha Registro":    _now_ec().strftime("%Y-%m-%d %H:%M"),
-                        "Fecha Llegada Real": "",
-                        "Observaciones":     (_f_obs or "").strip(),
-                    }
+                    # Crear un registro por línea válida, compartiendo
+                    # Pedido + Proveedor de la cabecera. ID correlativo
+                    # consecutivo dentro del mismo submit.
+                    _base_next = _next_import_id(imp_df)
+                    _n = int(_base_next.split("-")[1])
+                    _pedido = _f_pedido.strip()
+                    _proveedor = _f_proveedor.strip()
+                    _obs_cab = (_f_obs_cab or "").strip()
+                    _now_ts = _now_ec().strftime("%Y-%m-%d %H:%M")
+
+                    _new_rows = []
+                    for _, _row in _valid.iterrows():
+                        _sku = str(_row["SKU"]).strip()
+                        _nombre = str(_row.get("Nombre","") or "").strip()
+                        if not _nombre:
+                            _nombre = _sku_name_map.get(_sku, "")
+                        _qty = int(_row["Cantidad"])
+                        _tipo = _row.get("Tipo Embarque") or _IMP_TIPOS[0]
+                        _fecha = _row.get("Fecha Tentativa")
+                        if _fecha is None or (
+                            isinstance(_fecha, float) and pd.isna(_fecha)):
+                            _fecha_str = ""
+                        elif hasattr(_fecha, "strftime"):
+                            _fecha_str = _fecha.strftime("%Y-%m-%d")
+                        else:
+                            _fecha_str = str(_fecha)
+                        _obs_line = str(_row.get("Observaciones","") or "").strip()
+                        # Observaciones final: combinar cabecera + línea
+                        if _obs_cab and _obs_line:
+                            _obs_final = f"{_obs_cab} · {_obs_line}"
+                        else:
+                            _obs_final = _obs_cab or _obs_line
+
+                        _new_rows.append({
+                            "ID":                f"IMP-{_n:04d}",
+                            "Pedido":            _pedido,
+                            "Proveedor":         _proveedor,
+                            "Código Producto":   _sku,
+                            "Nombre Producto":   _nombre,
+                            "Cantidad":          _qty,
+                            "Tipo Embarque":     _tipo,
+                            "Fecha Tentativa":   _fecha_str,
+                            "Estado":            "INGRESADA",
+                            "Fecha Registro":    _now_ts,
+                            "Fecha Llegada Real": "",
+                            "Observaciones":     _obs_final,
+                        })
+                        _n += 1
+
                     _new_df = pd.concat(
-                        [imp_df, pd.DataFrame([_new_row], columns=_IMP_COLS)],
+                        [imp_df, pd.DataFrame(_new_rows, columns=_IMP_COLS)],
                         ignore_index=True)
                     imp_state["df"] = _new_df
                     _persist_importaciones(_new_df)
-                    log(f"Importación creada {_new_id}: {_sku_final} × {_f_cant} ({_f_tipo})")
-                    st.success(f"✅ Registrada {_new_id} — {_sku_final} × {int(_f_cant)} ({_f_tipo})")
+                    log(f"Importación creada: Pedido={_pedido} "
+                        f"Proveedor={_proveedor} — {len(_new_rows)} líneas")
+                    st.success(
+                        f"✅ Registrado pedido **{_pedido}** ({_proveedor}): "
+                        f"{len(_new_rows)} línea(s) en estado INGRESADA.")
                     _rerun_frag()
 
     st.divider()
