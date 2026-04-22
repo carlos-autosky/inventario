@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.16.2"
+APP_VERSION = "v4.16.3"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.16.2":
+if st.session_state.get("_app_version") != "v4.16.3":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.16.2"
+    st.session_state["_app_version"] = "v4.16.3"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -6441,8 +6441,17 @@ def _publish_html_to_gist(html_bytes, token):
     # por eso envolvemos con htmlpreview.github.io que fetchea el raw y lo
     # renderiza client-side con el content-type correcto. Devolvemos ambas:
     # preview_url para compartir, raw_url como referencia técnica.
+    #
+    # Cache-buster: `?v=<timestamp>` en el raw URL dentro del preview para
+    # evitar que GitHub raw (varnish) y el browser sirvan contenido viejo
+    # tras una re-publicación. GitHub ignora el query string y siempre
+    # devuelve el último contenido del gist; pero el query string distinto
+    # fuerza cache-miss tanto en el CDN como en el browser. Cada publicación
+    # genera un URL nuevo → el usuario que comparte siempre pasa fresh data.
+    _cb = int(_ptime.time())
     _raw_url = f"https://gist.githubusercontent.com/{_user_login}/{_gid}/raw/{GIST_FILENAME}"
-    _preview_url = f"https://htmlpreview.github.io/?{_raw_url}"
+    _raw_url_cb = f"{_raw_url}?v={_cb}"
+    _preview_url = f"https://htmlpreview.github.io/?{_raw_url_cb}"
     return _gid, _preview_url, _raw_url, _user_login
 
 def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
@@ -6720,7 +6729,9 @@ def _render_tab_exp():
     if not _show_url and _cached_gid and _cached_owner:
         _raw = (f"https://gist.githubusercontent.com/{_cached_owner}"
                 f"/{_cached_gid}/raw/{GIST_FILENAME}")
-        _show_url = f"https://htmlpreview.github.io/?{_raw}"
+        # Cache-buster para evitar que varnish/browser sirvan contenido viejo
+        _cb = int(_ptime.time())
+        _show_url = f"https://htmlpreview.github.io/?{_raw}?v={_cb}"
         _show_raw = _raw
 
     if _show_url:
