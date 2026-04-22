@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.14.3"
+APP_VERSION = "v4.15"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.14.3":
+if st.session_state.get("_app_version") != "v4.15":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.14.3"
+    st.session_state["_app_version"] = "v4.15"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -1599,6 +1599,134 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
 
     doc.build(elements, onFirstPage=_fp, onLaterPages=_fp)
     return buf.getvalue()
+
+
+def to_html_mobile(df, fecha_corte_txt):
+    """HTML standalone responsive optimizado para visualización móvil:
+    una card por SKU con Código/Nombre/Stock, buscador client-side (JS),
+    logo embebido en base64. Columnas esperadas: SKU, Nombre Producto,
+    Stock Disponible. Devuelve bytes UTF-8."""
+    from html import escape as _esc
+    _logo = _logo_data_uri()
+    _now_txt = _now_ec().strftime("%d/%m/%Y %H:%M GMT-5")
+    _n_total = len(df)
+    _n_pos   = int((df["Stock Disponible"] > 0).sum())
+    _n_zero  = int((df["Stock Disponible"] == 0).sum())
+    _n_neg   = int((df["Stock Disponible"] < 0).sum())
+
+    _cards = []
+    for _, row in df.iterrows():
+        _sku  = _esc(str(row["SKU"]))
+        _name = _esc(str(row["Nombre Producto"]))
+        _stk  = int(row["Stock Disponible"])
+        _cls  = "pos" if _stk > 0 else ("neg" if _stk < 0 else "zero")
+        _srch = _esc((str(row["SKU"]) + " " + str(row["Nombre Producto"]))
+                     .lower())
+        _cards.append(
+            f'<div class="sku" data-search="{_srch}">'
+            f'<div class="sku-info">'
+            f'<div class="sku-code">{_sku}</div>'
+            f'<div class="sku-name">{_name}</div>'
+            f'</div>'
+            f'<div class="stock {_cls}">{_stk:,}</div>'
+            f'</div>'
+        )
+    _logo_tag = (f'<img src="{_logo}" alt="AutoSky">' if _logo else '')
+
+    html = f"""<!DOCTYPE html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
+<title>Stock Ejecutivo · AutoSky</title>
+<style>
+  *{{box-sizing:border-box}}
+  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       background:#f0f9ff;color:#0f172a;margin:0;padding:0;
+       -webkit-font-smoothing:antialiased}}
+  .header{{background:linear-gradient(135deg,#0ea5e9,#1e3a5f);color:#fff;
+          padding:22px 16px 18px;text-align:center;
+          box-shadow:0 4px 14px rgba(30,58,95,.18)}}
+  .header img{{max-height:44px;background:#fff;padding:5px 9px;border-radius:8px}}
+  .header h1{{margin:12px 0 4px;font-size:22px;font-weight:700}}
+  .header p{{margin:0;font-size:13px;opacity:.92}}
+  .wrap{{max-width:720px;margin:0 auto;padding:16px}}
+  .summary{{display:flex;gap:8px;margin:4px 0 16px}}
+  .summary .card{{flex:1;background:#fff;border-radius:12px;padding:12px 8px;
+                  text-align:center;box-shadow:0 2px 6px rgba(0,0,0,.05)}}
+  .summary strong{{font-size:22px;font-weight:700;display:block;line-height:1.1}}
+  .summary .card.pos strong{{color:#059669}}
+  .summary .card.zero strong{{color:#94a3b8}}
+  .summary .card.neg strong{{color:#dc2626}}
+  .summary .card.tot strong{{color:#0ea5e9}}
+  .summary span{{font-size:11px;color:#64748b;text-transform:uppercase;
+                 letter-spacing:.5px;margin-top:4px;display:block}}
+  .search{{position:sticky;top:0;z-index:10;background:#f0f9ff;
+           padding:8px 0 6px}}
+  .search input{{width:100%;padding:12px 14px;border:1px solid #cbd5e1;
+                 border-radius:10px;font-size:15px;outline:none;
+                 background:#fff;transition:border-color .15s}}
+  .search input:focus{{border-color:#0ea5e9;
+                       box-shadow:0 0 0 3px rgba(14,165,233,.15)}}
+  .sku{{background:#fff;border-radius:12px;padding:13px 14px;margin-bottom:7px;
+        box-shadow:0 1px 3px rgba(0,0,0,.05);display:flex;
+        justify-content:space-between;align-items:center;gap:10px}}
+  .sku-info{{flex:1;min-width:0}}
+  .sku-code{{font-weight:600;color:#0ea5e9;font-size:14px;letter-spacing:.3px}}
+  .sku-name{{color:#475569;font-size:13px;margin-top:2px;
+             overflow:hidden;text-overflow:ellipsis;
+             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
+  .stock{{font-size:22px;font-weight:700;padding:0 4px;min-width:60px;
+          text-align:right;line-height:1}}
+  .stock.pos{{color:#059669}}
+  .stock.zero{{color:#94a3b8}}
+  .stock.neg{{color:#dc2626}}
+  .empty{{text-align:center;color:#94a3b8;padding:30px 0;font-size:14px}}
+  .footer{{text-align:center;color:#64748b;font-size:11px;padding:20px 10px 26px}}
+  @media (min-width:700px){{
+    .sku-name{{font-size:14px}}
+    .stock{{font-size:24px}}
+  }}
+</style></head>
+<body>
+  <div class="header">
+    {_logo_tag}
+    <h1>Stock Ejecutivo</h1>
+    <p>Actualizado hasta {fecha_corte_txt} · {_n_total} SKUs</p>
+  </div>
+  <div class="wrap">
+    <div class="summary">
+      <div class="card pos"><strong>{_n_pos}</strong><span>Con stock</span></div>
+      <div class="card zero"><strong>{_n_zero}</strong><span>En cero</span></div>
+      <div class="card neg"><strong>{_n_neg}</strong><span>Negativo</span></div>
+      <div class="card tot"><strong>{_n_total}</strong><span>Total</span></div>
+    </div>
+    <div class="search">
+      <input type="text" id="q" placeholder="🔍 Buscar SKU o producto…"
+             oninput="filterSku()" autocomplete="off">
+    </div>
+    <div id="list">
+      {"".join(_cards)}
+    </div>
+    <div id="empty" class="empty" style="display:none">
+      Sin resultados para tu búsqueda
+    </div>
+    <div class="footer">AutoSky Inventario · Generado {_now_txt}</div>
+  </div>
+<script>
+function filterSku(){{
+  var q=document.getElementById('q').value.toLowerCase().trim();
+  var items=document.querySelectorAll('.sku');
+  var shown=0;
+  items.forEach(function(el){{
+    var match=!q || el.dataset.search.indexOf(q)!==-1;
+    el.style.display=match?'':'none';
+    if(match) shown++;
+  }});
+  document.getElementById('empty').style.display=shown?'none':'block';
+}}
+</script>
+</body></html>"""
+    return html.encode("utf-8")
 
 
 def to_pdf(df, title="Reporte"):
@@ -5592,6 +5720,7 @@ with T_AUD:
 PORTAL_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "static")
 PORTAL_CSV_PATH = os.path.join(PORTAL_STATIC_DIR, "stock_portal.csv")
+PORTAL_HTML_PATH = os.path.join(PORTAL_STATIC_DIR, "stock_ejecutivo.html")
 
 def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
     """CSV con primera línea de metadata (Fecha Corte: DD/MM/YYYY), luego
@@ -5602,6 +5731,29 @@ def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
 def _build_portal_tsv_bytes(df_portal, fecha_corte_txt):
     body = df_portal.to_csv(index=False, sep="\t")
     return (f"Fecha Corte: {fecha_corte_txt}\n" + body).encode("utf-8")
+
+def _portal_public_url(filename):
+    """Construye URL pública del archivo publicado leyendo Host del request
+    entrante. Funciona tanto en local como en Streamlit Cloud (autodetecta
+    dominio) sin valores hardcodeados."""
+    _host = None
+    _proto = None
+    try:
+        _hdrs = st.context.headers  # type: ignore[attr-defined]
+        _host = (_hdrs.get("Host") or _hdrs.get("host") or
+                 _hdrs.get(":authority"))
+        _proto = (_hdrs.get("X-Forwarded-Proto") or
+                  _hdrs.get("x-forwarded-proto"))
+    except Exception:
+        pass
+    if not _host:
+        _port = os.environ.get("STREAMLIT_SERVER_PORT", "8501")
+        _host = f"localhost:{_port}"
+    if not _proto:
+        _proto = ("https" if (".streamlit.app" in _host or
+                               "streamlit.io" in _host)
+                  else "http")
+    return f"{_proto}://{_host}/app/static/{filename}"
 
 
 @_fragment
@@ -5709,32 +5861,10 @@ def _render_tab_exp():
         else:
             st.info("Aún no se ha publicado ninguna versión del CSV.")
 
-    # URL pública — derivar host/proto del request entrante (Host header),
-    # así funciona tanto en local como en Streamlit Cloud (dominio propio)
-    # sin hardcodear valores.
+    # URL pública — autodetectada desde Host header (funciona en local y
+    # en Streamlit Cloud sin hardcodear dominio).
     if _exists:
-        _rel_url = "/app/static/stock_portal.csv"
-        _host = None
-        _proto = None
-        try:
-            _hdrs = st.context.headers  # type: ignore[attr-defined]
-            # Header names pueden venir en cualquier caso; probar variantes.
-            _host = (_hdrs.get("Host") or _hdrs.get("host") or
-                     _hdrs.get(":authority"))
-            _proto = (_hdrs.get("X-Forwarded-Proto") or
-                      _hdrs.get("x-forwarded-proto"))
-        except Exception:
-            pass
-        if not _host:
-            # Fallback: puerto local si no hay header (ej: script standalone)
-            _port = os.environ.get("STREAMLIT_SERVER_PORT", "8501")
-            _host = f"localhost:{_port}"
-        if not _proto:
-            # Streamlit Cloud siempre es HTTPS; local asumimos HTTP.
-            _proto = ("https" if (".streamlit.app" in _host or
-                                   "streamlit.io" in _host)
-                      else "http")
-        _public_url = f"{_proto}://{_host}{_rel_url}"
+        _public_url = _portal_public_url("stock_portal.csv")
         st.markdown("**URL pública (para el servicio externo):**")
         st.code(_public_url, language=None)
         st.caption(
@@ -5769,6 +5899,73 @@ def _render_tab_exp():
     else:
         st.button("📄 PDF ejecutivo (reportlab no instalado)",
                  disabled=True, key="exp_ejec_pdf_x", width='stretch')
+
+    st.divider()
+
+    # ── Sección C: Vista móvil ejecutiva publicada ───────────────────
+    st.markdown("#### 📱 Vista móvil ejecutiva")
+    st.caption(
+        "Publica una página HTML responsive (optimizada para celular) con "
+        "el stock actual de todos los SKUs. Compártela por WhatsApp con un "
+        "clic — el destinatario abre la URL y ve el reporte directamente "
+        "en su teléfono."
+    )
+
+    # Construir HTML móvil en memoria para descarga rápida
+    _html_mobile = to_html_mobile(df_ejec, _gl_txt)
+
+    # Estado del archivo publicado
+    _exists_html = os.path.exists(PORTAL_HTML_PATH)
+    _pub_html_info = ""
+    if _exists_html:
+        try:
+            _mt_h = os.path.getmtime(PORTAL_HTML_PATH)
+            _pub_html_info = datetime.fromtimestamp(_mt_h, _EC_TZ).replace(
+                tzinfo=None).strftime("%d/%m/%Y %H:%M GMT-5")
+        except Exception:
+            _pub_html_info = "—"
+
+    mc1, mc2 = st.columns([1, 2])
+    with mc1:
+        if st.button("📡 Publicar vista móvil",
+                     key="exp_mobile_publish", type="primary",
+                     width='stretch'):
+            try:
+                os.makedirs(PORTAL_STATIC_DIR, exist_ok=True)
+                with open(PORTAL_HTML_PATH, "wb") as _f:
+                    _f.write(_html_mobile)
+                log(f"Publicado stock_ejecutivo.html ({len(df_ejec)} SKUs, "
+                    f"corte {_gl_txt})")
+                st.success("✓ Publicado — URL y botón WhatsApp abajo")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Error al publicar: {_e}")
+    with mc2:
+        if _exists_html:
+            st.markdown(f"**Última publicación:** {_pub_html_info}")
+        else:
+            st.info("Aún no se ha publicado la vista móvil.")
+
+    # También permitir descarga directa del HTML (backup off-line)
+    st.download_button("⬇ Descargar HTML (offline)", _html_mobile,
+        f"stock_ejecutivo_movil_{_stamp}.html", "text/html",
+        key="exp_mobile_dl", width='stretch')
+
+    if _exists_html:
+        _public_html_url = _portal_public_url("stock_ejecutivo.html")
+        st.markdown("**URL pública (compartible):**")
+        st.code(_public_html_url, language=None)
+
+        # Link a WhatsApp: https://wa.me/?text=<url> abre WhatsApp con el
+        # texto pre-llenado. En móvil abre la app; en desktop abre Web.
+        import urllib.parse as _up
+        _wa_url = f"https://wa.me/?text={_up.quote(_public_html_url)}"
+        st.link_button("📲 Compartir por WhatsApp", _wa_url,
+                        width='stretch', type="primary")
+        st.caption(
+            "El botón abre WhatsApp (móvil) o WhatsApp Web (desktop) con "
+            "la URL lista para enviar — sólo selecciona el contacto."
+        )
 
 with T_EXP:
     _render_tab_exp()
