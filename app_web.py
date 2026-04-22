@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.13"
+APP_VERSION = "v4.13.1"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.13":
+if st.session_state.get("_app_version") != "v4.13.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.13"
+    st.session_state["_app_version"] = "v4.13.1"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -4325,6 +4325,71 @@ def _render_resumen_fragment():
 
     if rap_df is None or rap_df.empty:
         st.info("Aún no hay tomas registradas. Ve a «⚡ Toma» para empezar.")
+        # Permitir restaurar un backup previo aun sin tomas registradas:
+        # es el único momento donde la pantalla se bloqueaba (post-reboot),
+        # dejando al usuario sin forma de subir el ZIP de respaldo.
+        with st.expander("♻ Restaurar desde backup ZIP (post-reboot)",
+                          expanded=True):
+            st.caption(
+                "Si tienes un backup ZIP descargado antes de un reboot, "
+                "súbelo aquí para restaurar historial de tomas, filtros "
+                "de exclusión y ubicaciones custom."
+            )
+            import json, zipfile
+            _up_zip = st.file_uploader("Subir backup ZIP",
+                type=["zip"], key="res_restore_zip_empty",
+                label_visibility="collapsed")
+            if _up_zip is not None and st.button(
+                "♻ Restaurar desde ZIP", type="primary",
+                width='stretch', key="res_restore_btn_empty"
+            ):
+                try:
+                    _in = zipfile.ZipFile(io.BytesIO(_up_zip.getvalue()))
+                    _names = _in.namelist()
+                    _summary = []
+                    if "toma_fisica_rapida.xlsx" in _names:
+                        with _in.open("toma_fisica_rapida.xlsx") as _fh:
+                            _df_imp = pd.read_excel(_fh)
+                        rap_state["df"] = _df_imp
+                        _persist_rapid(_df_imp)
+                        _summary.append(
+                            f"📋 Historial: {len(_df_imp):,} filas restauradas")
+                    if "filtros_config.json" in _names:
+                        _raw = _in.read("filtros_config.json").decode("utf-8")
+                        _data = json.loads(_raw)
+                        _sku_set = set(_data.get("excluded_skus", []))
+                        _wh_set  = set(_data.get("excluded_warehouses", []))
+                        _shared_f = _get_shared_filtros()
+                        _shared_f["excluded_skus"]       = _sku_set
+                        _shared_f["excluded_warehouses"] = _wh_set
+                        _persist_filtros(_sku_set, _wh_set)
+                        st.session_state["excluded_skus"] = _sku_set
+                        st.session_state["excl_wh"]       = _wh_set
+                        _summary.append(
+                            f"🚫 Filtros: {len(_sku_set)} SKU + "
+                            f"{len(_wh_set)} bodegas")
+                    if "ubicaciones_custom.json" in _names:
+                        _raw = _in.read("ubicaciones_custom.json").decode("utf-8")
+                        _data = json.loads(_raw)
+                        _lst = list(_data.get("ubicaciones", []))
+                        _c = _get_custom_ubic()
+                        _c["list"] = _lst
+                        _persist_custom_ubic(_lst)
+                        _summary.append(
+                            f"📍 Ubicaciones custom: {len(_lst)} restauradas")
+                    if _summary:
+                        st.success("✅ Restaurado:\n\n" +
+                                    "\n".join(f"- {s}" for s in _summary))
+                        log(f"Backup restaurado desde {_up_zip.name}: "
+                            f"{'; '.join(_summary)}")
+                        _rerun_frag()
+                    else:
+                        st.warning(
+                            "El ZIP no contenía ninguno de los archivos "
+                            "esperados (toma_fisica_rapida.xlsx, "
+                            "filtros_config.json, ubicaciones_custom.json).")
+                except Exception as _ex:
+                    st.error(f"Error al restaurar: {_ex}")
         return
 
     # Para cada (SKU, Ubicación) conservar sólo la última toma
