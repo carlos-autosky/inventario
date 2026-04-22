@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.15.1"
+APP_VERSION = "v4.15.3"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.15.1":
+if st.session_state.get("_app_version") != "v4.15.3":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.15.1"
+    st.session_state["_app_version"] = "v4.15.3"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -5845,9 +5845,14 @@ def _publish_html_to_gist(html_bytes, token):
     except Exception:
         pass
 
-    # URL raw estable (siempre apunta a la última versión del archivo)
+    # URLs del gist. La URL raw de gist.githubusercontent.com se sirve
+    # como text/plain (GitHub no permite hosting HTML desde gists directo),
+    # por eso envolvemos con htmlpreview.github.io que fetchea el raw y lo
+    # renderiza client-side con el content-type correcto. Devolvemos ambas:
+    # preview_url para compartir, raw_url como referencia técnica.
     _raw_url = f"https://gist.githubusercontent.com/{_user_login}/{_gid}/raw/{GIST_FILENAME}"
-    return _gid, _raw_url, _user_login
+    _preview_url = f"https://htmlpreview.github.io/?{_raw_url}"
+    return _gid, _preview_url, _raw_url, _user_login
 
 def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
     """CSV con primera línea de metadata (Fecha Corte: DD/MM/YYYY), luego
@@ -6074,10 +6079,11 @@ def _render_tab_exp():
         if _btn and _token_ok:
             with st.spinner("Publicando al Gist…"):
                 try:
-                    _gid, _raw_url, _owner = _publish_html_to_gist(
-                        _html_mobile, _token)
+                    _gid, _prev_url, _raw_url, _owner = \
+                        _publish_html_to_gist(_html_mobile, _token)
                     st.session_state["_gist_owner_cache"] = _owner
-                    st.session_state["_gist_last_url"]    = _raw_url
+                    st.session_state["_gist_last_url"]    = _prev_url
+                    st.session_state["_gist_last_raw"]    = _raw_url
                     st.session_state["_gist_last_time"]   = \
                         _now_ec().strftime("%d/%m/%Y %H:%M GMT-5")
                     log(f"Publicado Gist {_gid} ({len(df_ejec)} SKUs, "
@@ -6105,22 +6111,39 @@ def _render_tab_exp():
 
     # Mostrar URL del Gist si tenemos una publicación reciente o cacheada
     _show_url = st.session_state.get("_gist_last_url")
+    _show_raw = st.session_state.get("_gist_last_raw")
     if not _show_url and _cached_gid and _cached_owner:
-        _show_url = (f"https://gist.githubusercontent.com/{_cached_owner}"
-                     f"/{_cached_gid}/raw/{GIST_FILENAME}")
+        _raw = (f"https://gist.githubusercontent.com/{_cached_owner}"
+                f"/{_cached_gid}/raw/{GIST_FILENAME}")
+        _show_url = f"https://htmlpreview.github.io/?{_raw}"
+        _show_raw = _raw
 
     if _show_url:
-        st.markdown("**URL pública (compartible):**")
+        st.markdown("**URL pública (compartible) — se ve como página web:**")
         st.code(_show_url, language=None)
+        st.caption(
+            "Esta URL envuelve el gist con htmlpreview.github.io para que "
+            "el navegador lo renderice como HTML (no como texto). Perfecta "
+            "para compartir por WhatsApp / correo / chat."
+        )
 
         import urllib.parse as _up
         _wa_url = f"https://wa.me/?text={_up.quote(_show_url)}"
         st.link_button("📲 Compartir por WhatsApp", _wa_url,
                         width='stretch', type="primary")
         st.caption(
-            "El botón abre WhatsApp (móvil) o WhatsApp Web (desktop) con "
-            "la URL lista para enviar — sólo selecciona el contacto."
+            "Abre WhatsApp (móvil) o WhatsApp Web (desktop) con la URL "
+            "lista para enviar — sólo selecciona el contacto."
         )
+
+        if _show_raw:
+            with st.expander("🔧 Ver URL raw (gist.githubusercontent.com)"):
+                st.code(_show_raw, language=None)
+                st.caption(
+                    "Esta URL devuelve el HTML como texto plano — útil si "
+                    "el consumidor es un programa que lo va a procesar, "
+                    "no abrir en un navegador."
+                )
 
 with T_EXP:
     _render_tab_exp()
