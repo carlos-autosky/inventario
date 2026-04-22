@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.10 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.10.1 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.10"
+APP_VERSION = "v4.10.1"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.10":
+if st.session_state.get("_app_version") != "v4.10.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.10"
+    st.session_state["_app_version"] = "v4.10.1"
 
-st.set_page_config(page_title="Inventario v4.10", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1329,15 +1329,33 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
     ]
 
     cols = list(pivot_df.columns)
-    # Anchos proporcionales para A4 landscape
+    # Anchos proporcionales para A4 landscape (se dedica más espacio a las
+    # ubicaciones que antes, y el nombre producto reduce un poco)
     PW = landscape(A4)[0] - 3*cm
-    _wide_cols = {"Código Producto": 0.09, "Nombre Producto": 0.28, "Total": 0.08}
+    _wide_cols = {"Código Producto": 0.10, "Nombre Producto": 0.22, "Total": 0.07}
     _n_ubic_cols = sum(1 for c in cols if c not in _wide_cols)
     _remaining = 1 - sum(_wide_cols.get(c, 0) for c in cols if c in _wide_cols)
     _each = _remaining / _n_ubic_cols if _n_ubic_cols else 0
     cws = [PW * _wide_cols.get(c, _each) for c in cols]
 
-    # Construir data: encabezados + filas + TOTAL
+    # Estilos Paragraph para wrap de texto
+    _hdr_style = ParagraphStyle(
+        "pdf_hdr", fontSize=8, textColor=colors.white,
+        fontName="Helvetica-Bold", alignment=1,  # CENTER
+        leading=10, wordWrap="CJK",  # wordWrap CJK permite cortar entre letras
+    )
+    _sku_style = ParagraphStyle(
+        "pdf_sku", fontSize=8, textColor=C_TXT,
+        fontName="Helvetica", alignment=0,  # LEFT
+        leading=10, wordWrap="LTR",
+    )
+    _name_style = ParagraphStyle(
+        "pdf_name", fontSize=7.5, textColor=C_TXT,
+        fontName="Helvetica", alignment=0,  # LEFT
+        leading=9, wordWrap="LTR",
+    )
+
+    # Construir data con Paragraphs donde hace falta wrap
     def _fmt_cell(v, c):
         if pd.isna(v) or v is None: return ""
         if c in ("Código Producto", "Nombre Producto"):
@@ -1347,9 +1365,22 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
         except (ValueError, TypeError):
             return str(v)
 
-    data = [cols]
+    # Header row: Paragraph permite wrap del texto
+    _header_row = [Paragraph(str(c), _hdr_style) for c in cols]
+    data = [_header_row]
+
     for _, row in pivot_df.iterrows():
-        data.append([_fmt_cell(row[c], c) for c in cols])
+        _row_cells = []
+        for c in cols:
+            val = _fmt_cell(row[c], c)
+            if c == "Código Producto":
+                _row_cells.append(Paragraph(val, _sku_style))
+            elif c == "Nombre Producto":
+                _row_cells.append(Paragraph(val, _name_style))
+            else:
+                # Números: str simple, alineados a la derecha por TableStyle
+                _row_cells.append(val)
+        data.append(_row_cells)
 
     # Fila TOTAL: sumar columnas numéricas
     _tot = []
@@ -1367,24 +1398,24 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
     data.append(_tot)
 
     ts = TableStyle([
-        # Encabezado
+        # Encabezado — más alto para acomodar texto envuelto
         ("BACKGROUND", (0,0), (-1,0), C_HDR),
-        ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
-        ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
-        ("ALIGN",      (0,0), (-1,0), "CENTER"),
         ("VALIGN",     (0,0), (-1,0), "MIDDLE"),
+        ("TOPPADDING", (0,0), (-1,0), 8),
+        ("BOTTOMPADDING", (0,0), (-1,0), 8),
+        ("LEFTPADDING",(0,0), (-1,0), 4),
+        ("RIGHTPADDING",(0,0), (-1,0), 4),
+        # Body general
         ("FONTSIZE",   (0,0), (-1,-1), 8),
-        ("TOPPADDING", (0,0), (-1,0), 6),
-        ("BOTTOMPADDING", (0,0), (-1,0), 6),
-        # Body
         ("VALIGN",     (0,1), (-1,-1), "MIDDLE"),
         ("FONTNAME",   (0,1), (-1,-2), "Helvetica"),
-        ("ALIGN",      (2,1), (-1,-2), "RIGHT"),  # a partir de col 3 (no SKU/Nombre)
-        ("ALIGN",      (0,1), (0,-2),  "LEFT"),   # SKU izquierda
-        ("ALIGN",      (1,1), (1,-2),  "LEFT"),   # Nombre izquierda (si existe)
+        # Alineación numérica (columnas a partir de la 3: Total + Ubicaciones)
+        ("ALIGN",      (2,1), (-1,-2), "RIGHT"),
+        ("LEFTPADDING",(0,1), (-1,-2), 4),
+        ("RIGHTPADDING",(0,1), (-1,-2), 4),
+        ("TOPPADDING", (0,1), (-1,-2), 4),
+        ("BOTTOMPADDING", (0,1), (-1,-2), 4),
         ("GRID",       (0,0), (-1,-1), 0.4, C_BRD),
-        ("TOPPADDING", (0,1), (-1,-2), 3),
-        ("BOTTOMPADDING", (0,1), (-1,-2), 3),
         # Zebra
         ("ROWBACKGROUNDS", (0,1), (-1,-2), [colors.white, C_ZEB]),
         # Fila TOTAL
@@ -1392,6 +1423,8 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
         ("TEXTCOLOR",  (0,-1), (-1,-1), colors.white),
         ("FONTNAME",   (0,-1), (-1,-1), "Helvetica-Bold"),
         ("FONTSIZE",   (0,-1), (-1,-1), 9),
+        ("ALIGN",      (2,-1), (-1,-1), "RIGHT"),
+        ("ALIGN",      (0,-1), (0,-1),  "LEFT"),
         ("TOPPADDING", (0,-1), (-1,-1), 8),
         ("BOTTOMPADDING", (0,-1), (-1,-1), 8),
     ])
