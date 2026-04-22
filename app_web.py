@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.4 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.4.1 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.4"
+APP_VERSION = "v4.4.1"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.4":
+if st.session_state.get("_app_version") != "v4.4.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.4"
+    st.session_state["_app_version"] = "v4.4.1"
 
-st.set_page_config(page_title="Inventario v4.4", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.4.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -2642,9 +2642,13 @@ def _render_tab_cal():
         "obtiene cada valor, fórmula por fórmula."
     )
 
-    # Selector de SKU (predictivo con format_func nativo)
+    # Selector de SKU (predictivo con format_func nativo).
+    # Excluye los SKUs globalmente excluidos (sidebar).
     _opts = (eng.raw_df[["Código Producto","Nombre Producto"]]
-             .drop_duplicates().sort_values("Nombre Producto"))
+             .drop_duplicates().sort_values("Código Producto"))
+    _opts["Código Producto"] = _opts["Código Producto"].astype(str)
+    if eng.excluded_skus:
+        _opts = _opts[~_opts["Código Producto"].isin(eng.excluded_skus)]
     _codes = _opts["Código Producto"].astype(str).tolist()
     _names = _opts["Nombre Producto"].astype(str).tolist()
     _labels = [f"{c} — {n}" for c,n in zip(_codes, _names)]
@@ -2838,9 +2842,13 @@ def _render_tab_pur():
     eng = st.session_state.engine
     if eng.raw_df is None: st.info("Cargue un archivo.")
     else:
-        # Multiselect predictivo con filtro estricto
+        # Multiselect predictivo con filtro estricto.
+        # Excluye SKUs globalmente excluidos (sidebar).
         _pu_opts = eng.raw_df[["Código Producto","Nombre Producto"]].drop_duplicates()
-        _pu_opts = _pu_opts.sort_values("Nombre Producto")
+        _pu_opts = _pu_opts.sort_values("Código Producto")
+        _pu_opts["Código Producto"] = _pu_opts["Código Producto"].astype(str)
+        if eng.excluded_skus:
+            _pu_opts = _pu_opts[~_pu_opts["Código Producto"].isin(eng.excluded_skus)]
         _pu_labels = [f"{c} — {n}" for c,n in zip(
             _pu_opts["Código Producto"].astype(str), _pu_opts["Nombre Producto"].astype(str))]
         _pu_sel = st.multiselect("🔍 SKU / Producto", _pu_labels, key="pu_f",
@@ -3025,9 +3033,13 @@ def _render_tab_kdx():
         kdf=date.today()-timedelta(days=365)
         kd_f=c1.date_input("Desde",kdf,format="DD/MM/YYYY",key="kf")
         kd_t=c2.date_input("Hasta",date.today(),format="DD/MM/YYYY",key="kt")
-        # Selector predictivo con filtro estricto de substring
+        # Selector predictivo con filtro estricto de substring.
+        # Excluye SKUs globalmente excluidos (sidebar).
         _kdx_opts = (eng.raw_df[["Código Producto","Nombre Producto"]]
-                     .drop_duplicates().sort_values("Nombre Producto"))
+                     .drop_duplicates().sort_values("Código Producto"))
+        _kdx_opts["Código Producto"] = _kdx_opts["Código Producto"].astype(str)
+        if eng.excluded_skus:
+            _kdx_opts = _kdx_opts[~_kdx_opts["Código Producto"].isin(eng.excluded_skus)]
         _kdx_codes  = _kdx_opts["Código Producto"].astype(str).tolist()
         _kdx_names  = _kdx_opts["Nombre Producto"].astype(str).tolist()
         _kdx_labels = [f"{c} — {n}" for c,n in zip(_kdx_codes, _kdx_names)]
@@ -3248,13 +3260,18 @@ with T_KDX:
 # Aislado en @st.fragment: las ediciones de celdas solo re-ejecutan esta
 # función, no toda la app.
 def _build_toma_table(eng, rap_df, ubicacion):
-    """Construye DataFrame con TODOS los SKUs + su cantidad anterior para la ubicación dada."""
+    """Construye DataFrame con TODOS los SKUs + su cantidad anterior para la ubicación dada.
+    Respeta la exclusión global de SKUs: los SKUs en eng.excluded_skus no aparecen
+    porque no interesan en el análisis."""
     sk = (eng.raw_df[["Código Producto","Nombre Producto"]]
           .drop_duplicates()
-          .sort_values("Nombre Producto")
+          .sort_values("Código Producto")
           .reset_index(drop=True)).copy()
     sk["Código Producto"] = sk["Código Producto"].astype(str)
     sk["Nombre Producto"]  = sk["Nombre Producto"].astype(str)
+    # Aplicar exclusión global de SKUs (sidebar) — no aparecen en la toma
+    if eng.excluded_skus:
+        sk = sk[~sk["Código Producto"].isin(eng.excluded_skus)].reset_index(drop=True)
     prev_map = {}
     if rap_df is not None and not rap_df.empty:
         pv = rap_df[rap_df["Ubicación"].astype(str) == str(ubicacion)].copy()
@@ -3954,8 +3971,12 @@ def _render_plantilla_fragment():
             import openpyxl
             from openpyxl.styles import PatternFill,Font,Alignment,Border,Side
             from openpyxl.utils import get_column_letter,quote_sheetname
+            # Plantilla respeta la exclusión global de SKUs
             sd=(eng.raw_df[["Código Producto","Nombre Producto"]].drop_duplicates()
-                .sort_values("Nombre Producto").reset_index(drop=True))
+                .sort_values("Código Producto").reset_index(drop=True))
+            sd["Código Producto"] = sd["Código Producto"].astype(str)
+            if eng.excluded_skus:
+                sd = sd[~sd["Código Producto"].isin(eng.excluded_skus)].reset_index(drop=True)
             n=len(sd); DR=4
             H=PatternFill("solid",fgColor="1E3A5F"); Y=PatternFill("solid",fgColor="FEF9C3")
             G=PatternFill("solid",fgColor="D1FAE5"); Q=PatternFill("solid",fgColor="DBEAFE")
