@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.6 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.7 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.6"
+APP_VERSION = "v4.7"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.6":
+if st.session_state.get("_app_version") != "v4.7":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.6"
+    st.session_state["_app_version"] = "v4.7"
 
-st.set_page_config(page_title="Inventario v4.6", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.7", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1607,7 +1607,7 @@ if eng.raw_df is not None and "Fecha" in eng.raw_df.columns:
             _pb_arr = "#7dd3fc" if dark else "#94a3b8"
             _pb_mut = "#94a3b8" if dark else "#64748b"
             st.markdown(
-                f"<div style='display:inline-flex;align-items:center;gap:16px;"
+                f"<div class='as-periodo-banner' style='display:inline-flex;align-items:center;gap:16px;"
                 f"background:{_pb_bg};border:1px solid {_pb_bdr};border-radius:8px;"
                 f"padding:7px 16px;margin-bottom:8px;font-size:12px'>"
                 f"<span style='color:{_pb_lbl};font-weight:600'>📅 PERÍODO DE ANÁLISIS</span>"
@@ -1635,7 +1635,7 @@ if _act_excl_sku or _act_excl_wh:
             f"🏷 <b>{len(_act_excl_sku)} SKU(s) excluido(s)</b>"
         )
     st.markdown(
-        f"<div style='background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;"
+        f"<div class='as-excl-banner' style='background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;"
         f"padding:8px 14px;margin-bottom:10px;font-size:12px;color:#92400e;"
         f"line-height:1.5'>"
         f"<b>⚠ Exclusiones globales activas</b> — los movimientos relacionados se "
@@ -3320,7 +3320,8 @@ def _build_toma_table(eng, rap_df, ubicacion):
     sk["Anterior"]    = sk["Código Producto"].map(prev_map)
     sk["Nueva"]       = pd.NA
     sk["Observación"] = ""
-    return sk[["Código Producto","Nombre Producto","Anterior","Nueva","Observación"]]
+    # Orden: Producto a la IZQUIERDA (nombre), SKU a la derecha, luego datos editables
+    return sk[["Nombre Producto","Código Producto","Anterior","Nueva","Observación"]]
 
 @_fragment
 def _render_toma_fragment():
@@ -3339,25 +3340,33 @@ def _render_toma_fragment():
         st.session_state["toma_fullscreen"] = False
 
     if st.session_state["toma_fullscreen"]:
-        # CSS que oculta todo excepto el contenido de la pestaña actual.
-        # Se aplica solo mientras el toggle esté activo.
+        # CSS modo minimalista: solo lo esencial para contar.
         st.markdown("""
         <style>
         /* Ocultar sidebar */
         section[data-testid="stSidebar"] { display: none !important; }
         /* Ocultar banner AutoSky, período, KPIs y aviso de exclusiones */
         .as-banner,
-        div[style*="📅 PERÍODO DE ANÁLISIS"],
-        .kpi-row,
-        div[style*="Exclusiones globales activas"] { display: none !important; }
-        /* Ocultar la barra de tabs de nivel principal (mantiene las sub-tabs de Toma) */
-        .stTabs > div > [data-baseweb="tab-list"]:first-of-type,
-        .main > div > div > .stTabs > div > [data-baseweb="tab-list"] { display: none !important; }
+        .as-periodo-banner,
+        .as-excl-banner,
+        .kpi-row { display: none !important; }
+        /* Ocultar el título "Toma Física" (h3 #...) */
+        h3.as-toma-title { display: none !important; }
+        /* Ocultar TODAS las barras de tabs (principal y sub-tabs) */
+        [data-baseweb="tab-list"] { display: none !important; }
+        /* Ocultar el caption instructivo y otros elementos opcionales */
+        .toma-hide-in-fs { display: none !important; }
+        /* Ocultar el separador horizontal hr previo al título Toma */
+        hr { display: none !important; }
         /* Expandir el main area a full width */
         section[data-testid="stMain"] .block-container,
-        .main .block-container { max-width: 100% !important; padding-left: 1rem !important; padding-right: 1rem !important; }
-        /* Expandir sub-tabs para usar todo el ancho */
-        .stTabs [data-baseweb="tab-panel"] { padding-top: .5rem !important; }
+        .main .block-container { max-width: 100% !important;
+            padding-top: .5rem !important;
+            padding-left: .5rem !important; padding-right: .5rem !important; }
+        /* Panel de tab sin padding extra */
+        [data-baseweb="tab-panel"] { padding-top: 0 !important; }
+        /* Header/toolbar superior de Streamlit */
+        header[data-testid="stHeader"] { display: none !important; }
         </style>
         """, unsafe_allow_html=True)
 
@@ -3399,10 +3408,27 @@ def _render_toma_fragment():
     # Construir la tabla base para esta ubicación
     table_df = _build_toma_table(_eng, rap_df, sel_ubic)
 
-    st.caption(
-        "Escribe la cantidad en la columna **Nueva**. Tab avanza a Observación; "
-        "Tab otra vez baja a la siguiente fila. Flechas para navegar libremente. "
-        "Columna **Anterior** (gris) es la última toma registrada y no es editable."
+    # Instrucciones — solo visible en modo normal (ocultas en fullscreen)
+    if not st.session_state.get("toma_fullscreen", False):
+        st.markdown(
+            "<div class='toma-hide-in-fs' style='color:#64748b;font-size:13px;"
+            "margin-bottom:6px'>"
+            "Escribe la cantidad en la columna <b>Nueva</b>. Tab avanza a Observación; "
+            "Tab otra vez baja a la siguiente fila. Flechas para navegar libremente. "
+            "Columna <b>Anterior</b> (gris) es la última toma registrada y no es editable."
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+    # Controles compactos: toggle para ocultar columna Producto
+    _compact_key = f"toma_compact_{sel_ubic}"
+    if _compact_key not in st.session_state:
+        st.session_state[_compact_key] = False
+    _compact = st.toggle(
+        "📏 Vista compacta (ocultar columna Producto)",
+        key=_compact_key,
+        help="Oculta la columna de nombre del producto para ver más filas por pantalla. "
+             "Ideal en celular."
     )
 
     # Key dinámica por ubicación: al cambiar de ubicación, el editor reinicia
@@ -3485,14 +3511,24 @@ def _render_toma_fragment():
                     _rerun_frag()
 
 
+    # Vista compacta: dropear columna Producto si está activada
+    table_df_display = table_df
+    if _compact and "Nombre Producto" in table_df_display.columns:
+        table_df_display = table_df_display.drop(columns=["Nombre Producto"])
+
+    # En modo compacto dar más ancho a SKU para que no se trunque
+    _sku_width = "medium" if _compact else "small"
+    # Altura mayor en fullscreen
+    _editor_height = 720 if st.session_state.get("toma_fullscreen", False) else 520
+
     edited = st.data_editor(
-        table_df,
+        table_df_display,
         width='stretch',
         num_rows="fixed",
         hide_index=True,
         column_config={
-            "Código Producto": st.column_config.TextColumn("SKU", width="small", disabled=True),
             "Nombre Producto":  st.column_config.TextColumn("Producto", disabled=True),
+            "Código Producto":  st.column_config.TextColumn("SKU", width=_sku_width, disabled=True),
             "Anterior":         st.column_config.NumberColumn("Anterior", format="%d",
                                     disabled=True,
                                     help="Última toma registrada para este SKU en esta ubicación."),
@@ -3500,10 +3536,10 @@ def _render_toma_fragment():
                                     format="%d", min_value=0,
                                     help="Escribe la cantidad contada. Vacío = pendiente."),
             "Observación":      st.column_config.TextColumn("Observación",
-                                    help="Opcional. Ej: dñado, en caja master..."),
+                                    help="Opcional. Ej: dañado, en caja master..."),
         },
         key=editor_key,
-        height=520,
+        height=_editor_height,
     )
 
     # Progreso
@@ -3526,14 +3562,23 @@ def _render_toma_fragment():
                 st.warning("No hay cantidades registradas para guardar.")
             else:
                 _now = datetime.now().strftime("%Y-%m-%d %H:%M")
+                # En modo compacto la columna "Nombre Producto" no está en `edited`;
+                # lo busco del table_df original (que siempre la tiene).
+                _name_map = dict(zip(
+                    table_df["Código Producto"].astype(str),
+                    table_df["Nombre Producto"].astype(str),
+                )) if "Nombre Producto" in table_df.columns else {}
                 _rows = []
                 for _, row in to_save.iterrows():
                     _obs = row.get("Observación","")
+                    _cod = str(row["Código Producto"])
+                    _nom = str(row["Nombre Producto"]) if "Nombre Producto" in row.index \
+                           else _name_map.get(_cod, "")
                     _rows.append({
                         "Fecha": _now,
                         "Ubicación": sel_ubic,
-                        "Código Producto": str(row["Código Producto"]),
-                        "Nombre Producto":  str(row["Nombre Producto"]),
+                        "Código Producto": _cod,
+                        "Nombre Producto":  _nom,
                         "Cantidad Física": float(row["Nueva"]),
                         "Observación": _obs if pd.notna(_obs) else "",
                     })
