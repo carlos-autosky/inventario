@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.16.1"
+APP_VERSION = "v4.16.2"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.16.1":
+if st.session_state.get("_app_version") != "v4.16.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.16.1"
+    st.session_state["_app_version"] = "v4.16.2"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -277,7 +277,11 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
     Stock Disponible) sumando llegadas confirmadas al stock y agregando columnas
     'En Tránsito' y 'Fechas Tránsito'. SKUs sólo presentes en importaciones
     (nunca vistos en Contifico) se agregan como filas nuevas con Stock=llegadas.
-    Respeta la lista de SKUs excluidos globalmente."""
+    Respeta la lista de SKUs excluidos globalmente.
+
+    **Nota**: Stock Disponible se clampa a 0 (nunca negativo) — los reportes
+    ejecutivos de disponibilidad no deben mostrar cantidades negativas; un
+    cuadre desfavorable en el motor se interpreta como 'sin stock'."""
     excluded_skus = set(excluded_skus or [])
     agg = _aggregate_importaciones(imp_df)
 
@@ -290,6 +294,7 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
     if not agg:
         df["En Tránsito"] = df["En Tránsito"].fillna(0).astype(int)
         df["Fechas Tránsito"] = df["Fechas Tránsito"].fillna("").astype(str)
+        df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int).clip(lower=0)
         return df
 
     # Merge: para cada SKU en agg, ajustar fila existente o agregar nueva
@@ -327,7 +332,8 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
     if _new_rows:
         df = pd.concat([df, pd.DataFrame(_new_rows)], ignore_index=True)
 
-    df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int)
+    # Clamp a 0 — Stock Disponible en reportes ejecutivos no puede ser negativo
+    df["Stock Disponible"] = df["Stock Disponible"].fillna(0).astype(int).clip(lower=0)
     df["En Tránsito"]      = df["En Tránsito"].fillna(0).astype(int)
     df["Fechas Tránsito"]  = df["Fechas Tránsito"].fillna("").astype(str)
     return df.sort_values("Código Producto").reset_index(drop=True)
