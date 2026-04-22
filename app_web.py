@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.13.1"
+APP_VERSION = "v4.14.2"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.13.1":
+if st.session_state.get("_app_version") != "v4.14.2":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.13.1"
+    st.session_state["_app_version"] = "v4.14.2"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -1733,6 +1733,153 @@ def to_pdf(df, title="Reporte"):
         return buf.getvalue()
     except Exception:
         return None
+
+def to_pdf_ejecutivo(df, title="Stock Ejecutivo", subtitle=""):
+    """PDF ejecutivo vertical A4, tabla compacta pensada para caber en una
+    sola hoja. Usado por la pestaña Exportar Portal: 3 columnas
+    (SKU / Nombre Producto / Stock Disponible). El tamaño de fuente se
+    reduce automáticamente si el total de filas excede lo que cabe al
+    tamaño base, para maximizar la probabilidad de un solo page."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                        Paragraph)
+    except ImportError:
+        return None
+
+    try:
+        buf = io.BytesIO()
+        C_HDR = colors.HexColor("#1E3A5F")
+        C_TXT = colors.HexColor("#111827")
+        C_MUT = colors.HexColor("#64748B")
+        C_ZEB = colors.HexColor("#F8FAFC")
+        C_BRD = colors.HexColor("#CBD5E1")
+
+        _logo_path = _get_logo_path()
+
+        def _fp(canvas, doc):
+            canvas.saveState()
+            _pw, _ph = A4
+            _text_x = 1.5*cm
+            if _logo_path and os.path.exists(_logo_path):
+                try:
+                    from reportlab.lib.utils import ImageReader
+                    _ir = ImageReader(_logo_path)
+                    _iw, _ih = _ir.getSize()
+                    _target_h = 1.1*cm
+                    _target_w = _iw * (_target_h / _ih)
+                    canvas.drawImage(_logo_path, 1.2*cm,
+                                      _ph - _target_h - 0.3*cm,
+                                      width=_target_w, height=_target_h,
+                                      preserveAspectRatio=True, mask="auto")
+                    _text_x = 1.2*cm + _target_w + 0.4*cm
+                except Exception:
+                    pass
+            canvas.setFont("Helvetica-Bold", 10); canvas.setFillColor(C_HDR)
+            canvas.drawString(_text_x, _ph - 0.7*cm, title)
+            if subtitle:
+                canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+                canvas.drawString(_text_x, _ph - 1.15*cm, subtitle)
+            canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+            canvas.drawRightString(_pw - 1.2*cm, _ph - 0.7*cm,
+                                    _now_ec().strftime("%d/%m/%Y %H:%M"))
+            canvas.setStrokeColor(C_HDR); canvas.setLineWidth(1.0)
+            canvas.line(1.2*cm, _ph - 1.5*cm, _pw - 1.2*cm, _ph - 1.5*cm)
+            canvas.setFont("Helvetica", 7); canvas.setFillColor(C_MUT)
+            canvas.drawCentredString(_pw/2, 0.6*cm,
+                                      f"Página {doc.page}  ·  AutoSky Inventario")
+            canvas.restoreState()
+
+        # Escalar fuente según número de filas para maximizar chance de 1 page.
+        # Los nombres largos envuelven a 2 líneas: de ahí la agresividad a n>=55.
+        n = len(df)
+        if   n <= 28:  fs_body, row_pad = 9.0, 2.0
+        elif n <= 40:  fs_body, row_pad = 7.8, 1.4
+        elif n <= 55:  fs_body, row_pad = 5.8, 0.6
+        elif n <= 75:  fs_body, row_pad = 5.0, 0.4
+        elif n <= 95:  fs_body, row_pad = 4.4, 0.3
+        else:          fs_body, row_pad = 4.0, 0.2
+        fs_head = fs_body + 0.5
+
+        doc = SimpleDocTemplate(buf, pagesize=A4,
+                                 topMargin=2.0*cm, bottomMargin=1.1*cm,
+                                 leftMargin=1.2*cm, rightMargin=1.2*cm,
+                                 title=title)
+
+        cols = list(df.columns)
+        _is_num = {c: pd.api.types.is_numeric_dtype(df[c]) for c in cols}
+
+        # Pesos: el Nombre Producto se lleva la mayor parte del ancho
+        _weights = []
+        for c in cols:
+            _lc = str(c).lower()
+            if _is_num[c]:
+                _weights.append(1.2)
+            elif any(k in _lc for k in ("sku", "código", "codigo")):
+                _weights.append(1.3)
+            elif any(k in _lc for k in ("nombre", "producto", "descrip")):
+                _weights.append(4.2)
+            else:
+                _weights.append(1.8)
+        _tw = sum(_weights) or 1
+        PW = A4[0] - 2.4*cm
+        cws = [PW * (w / _tw) for w in _weights]
+
+        _hdr_style = ParagraphStyle("pdf_hdr", fontSize=fs_head,
+                                     textColor=colors.white,
+                                     fontName="Helvetica-Bold", alignment=1,
+                                     leading=fs_head+1, wordWrap="CJK")
+        _txt_style = ParagraphStyle("pdf_txt", fontSize=fs_body,
+                                     textColor=C_TXT, fontName="Helvetica",
+                                     alignment=0, leading=fs_body+1,
+                                     wordWrap="LTR")
+
+        _fmt_modes = {c: _col_fmt_mode(c, _is_num[c]) for c in cols}
+        _header_row = [Paragraph(str(c), _hdr_style) for c in cols]
+        data = [_header_row]
+        for _, row in df.iterrows():
+            _rc = []
+            for c in cols:
+                mode = _fmt_modes[c]
+                s = _fmt_cell(row[c], mode)
+                if mode == "text":
+                    _rc.append(Paragraph(s, _txt_style) if s else "")
+                else:
+                    _rc.append(s)
+            data.append(_rc)
+
+        ts = [
+            ("BACKGROUND",    (0,0), (-1,0),  C_HDR),
+            ("VALIGN",        (0,0), (-1,0),  "MIDDLE"),
+            ("TOPPADDING",    (0,0), (-1,0),  3),
+            ("BOTTOMPADDING", (0,0), (-1,0),  3),
+            ("LEFTPADDING",   (0,0), (-1,0),  2),
+            ("RIGHTPADDING",  (0,0), (-1,0),  2),
+            ("FONTSIZE",      (0,1), (-1,-1), fs_body),
+            ("VALIGN",        (0,1), (-1,-1), "MIDDLE"),
+            ("FONTNAME",      (0,1), (-1,-1), "Helvetica"),
+            ("LEFTPADDING",   (0,1), (-1,-1), 2),
+            ("RIGHTPADDING",  (0,1), (-1,-1), 2),
+            ("TOPPADDING",    (0,1), (-1,-1), row_pad),
+            ("BOTTOMPADDING", (0,1), (-1,-1), row_pad),
+            ("GRID",          (0,0), (-1,-1), 0.25, C_BRD),
+            ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.white, C_ZEB]),
+        ]
+        for i, c in enumerate(cols):
+            if _is_num[c]:
+                ts.append(("ALIGN", (i,1), (i,-1), "RIGHT"))
+
+        t = Table(data, colWidths=cws, repeatRows=1)
+        t.setStyle(TableStyle(ts))
+
+        doc.build([t], onFirstPage=_fp, onLaterPages=_fp)
+        return buf.getvalue()
+    except Exception:
+        return None
+
 
 def dl3(df, name, key):
     c1,c2,c3=st.columns(3)
@@ -5440,6 +5587,23 @@ with T_AUD:
     _render_tab_aud()
 
 # ══ TAB 11 EXPORTAR PORTAL ══════════════════════════════════════
+# Ruta canónica del CSV publicado. Streamlit sirve ./static/ en
+# http://<host>:<port>/app/static/<file> cuando enableStaticServing=true.
+PORTAL_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "static")
+PORTAL_CSV_PATH = os.path.join(PORTAL_STATIC_DIR, "stock_portal.csv")
+
+def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
+    """CSV con primera línea de metadata (Fecha Corte: DD/MM/YYYY), luego
+    header SKU,Stock Disponible y filas. UTF-8 con BOM para Excel."""
+    body = df_portal.to_csv(index=False)
+    return (f"Fecha Corte: {fecha_corte_txt}\n" + body).encode("utf-8-sig")
+
+def _build_portal_tsv_bytes(df_portal, fecha_corte_txt):
+    body = df_portal.to_csv(index=False, sep="\t")
+    return (f"Fecha Corte: {fecha_corte_txt}\n" + body).encode("utf-8")
+
+
 @_fragment
 def _render_tab_exp():
     r = st.session_state.get("result")
@@ -5455,17 +5619,10 @@ def _render_tab_exp():
         "se omiten automáticamente."
     )
 
-    # ── Base: sku_summary + fecha último movimiento por SKU ─────────
+    # ── Base: sku_summary (sin fecha por ítem — el corte está en el header) ─
     base = r.sku_summary[["Código Producto", "Nombre Producto",
                           "Stock Disponible"]].copy()
-    # Fecha del último movimiento por SKU (sobre df ya filtrado por corte/bodega)
-    _last = (r.filtered.groupby("Código Producto")["Fecha"].max()
-                    .rename("Fecha Último Movimiento").reset_index())
-    base = base.merge(_last, on="Código Producto", how="left")
     base["Stock Disponible"] = base["Stock Disponible"].fillna(0).astype(int)
-    base["Fecha Último Movimiento"] = pd.to_datetime(
-        base["Fecha Último Movimiento"], errors="coerce"
-    ).dt.strftime("%d/%m/%Y")
     base = base.sort_values("Código Producto").reset_index(drop=True)
 
     # Fecha global "actualizado hasta" (último movimiento del dataset filtrado)
@@ -5482,19 +5639,18 @@ def _render_tab_exp():
     # ── Sección A: datos para portal web ─────────────────────────────
     st.markdown("#### 🌐 Datos para portal web")
     st.caption(
-        "Tres columnas: SKU · Stock Disponible · Fecha último movimiento. "
-        "Formatos disponibles: CSV, TXT (separado por tabs), HTML."
+        "Dos columnas: SKU · Stock Disponible. La primera línea del CSV/TXT "
+        "contiene la fecha de corte (último movimiento de toda la data)."
     )
-    df_portal = base[["Código Producto", "Stock Disponible",
-                      "Fecha Último Movimiento"]].rename(
+    df_portal = base[["Código Producto", "Stock Disponible"]].rename(
         columns={"Código Producto": "SKU"})
 
     st.dataframe(df_portal, width='stretch', hide_index=True, height=320)
 
     _stamp = _now_ec().strftime("%Y%m%d_%H%M")
-    _csv = df_portal.to_csv(index=False).encode("utf-8-sig")
-    _tsv = df_portal.to_csv(index=False, sep="\t").encode("utf-8")
-    _html = to_html(df_portal, f"Stock Disponible — Portal ({_gl_txt})")
+    _csv = _build_portal_csv_bytes(df_portal, _gl_txt)
+    _tsv = _build_portal_tsv_bytes(df_portal, _gl_txt)
+    _html = to_html(df_portal, f"Stock Disponible — Portal (corte {_gl_txt})")
 
     e1, e2, e3 = st.columns(3)
     with e1:
@@ -5510,26 +5666,83 @@ def _render_tab_exp():
             f"stock_portal_{_stamp}.html", "text/html",
             key="exp_portal_htm", width='stretch')
 
+    # ── Publicación al portal (URL pública para consumo HTTP GET) ────
+    st.markdown("##### 📡 Publicar al portal")
+    st.caption(
+        "Escribe el CSV a una URL pública del servidor Streamlit para que "
+        "un servicio externo lo consuma por HTTP GET. El archivo se "
+        "sobrescribe en cada publicación."
+    )
+
+    try:
+        os.makedirs(PORTAL_STATIC_DIR, exist_ok=True)
+    except Exception as _e:
+        st.error(f"No se pudo crear {PORTAL_STATIC_DIR}: {_e}")
+
+    _exists = os.path.exists(PORTAL_CSV_PATH)
+    _pub_info = ""
+    if _exists:
+        try:
+            _mt = os.path.getmtime(PORTAL_CSV_PATH)
+            _pub_info = datetime.fromtimestamp(_mt, _EC_TZ).replace(
+                tzinfo=None).strftime("%d/%m/%Y %H:%M GMT-5")
+        except Exception:
+            _pub_info = "—"
+
+    pc1, pc2 = st.columns([1, 2])
+    with pc1:
+        if st.button("📡 Publicar CSV al portal",
+                     key="exp_portal_publish", type="primary",
+                     width='stretch'):
+            try:
+                with open(PORTAL_CSV_PATH, "wb") as _f:
+                    _f.write(_csv)
+                log(f"Publicado stock_portal.csv ({len(df_portal)} filas, "
+                    f"corte {_gl_txt})")
+                st.success("✓ Publicado — URL ya disponible abajo")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"Error al publicar: {_e}")
+    with pc2:
+        if _exists:
+            st.markdown(f"**Última publicación:** {_pub_info}")
+        else:
+            st.info("Aún no se ha publicado ninguna versión del CSV.")
+
+    # URL pública — intenta derivar host/puerto del request de Streamlit
+    if _exists:
+        _port = os.environ.get("STREAMLIT_SERVER_PORT", "8501")
+        _rel_url = f"/app/static/stock_portal.csv"
+        _local_url = f"http://localhost:{_port}{_rel_url}"
+        st.code(_local_url, language=None)
+        st.caption(
+            "Reemplaza `localhost` por la IP o dominio público del servidor "
+            "cuando el servicio externo consulte desde fuera de la red "
+            "local. El archivo se actualiza sólo cuando pulsas **Publicar**."
+        )
+
     st.divider()
 
-    # ── Sección B: PDF ejecutivo con logo/header/footer ──────────────
+    # ── Sección B: PDF ejecutivo vertical A4 (una sola hoja) ────────
     st.markdown("#### 📄 PDF ejecutivo")
     st.caption(
-        "Incluye SKU, Nombre Producto, Stock Disponible y Fecha último "
-        "movimiento. El encabezado muestra la fecha de corte global para "
-        "saber hasta qué punto están actualizados los datos."
+        "A4 vertical, 3 columnas: SKU · Nombre Producto · Stock Disponible. "
+        "El encabezado muestra la fecha de corte (último registro) para "
+        "indicar hasta qué punto están actualizados los datos."
     )
     df_ejec = base[["Código Producto", "Nombre Producto",
-                    "Stock Disponible", "Fecha Último Movimiento"]].rename(
-        columns={"Código Producto": "SKU",
-                 "Nombre Producto": "Nombre Producto"})
+                    "Stock Disponible"]].rename(
+        columns={"Código Producto": "SKU"})
 
     st.dataframe(df_ejec, width='stretch', hide_index=True, height=320)
 
-    _title = f"Stock Ejecutivo — Actualizado hasta {_gl_txt}"
-    _pdf = to_pdf(df_ejec, _title)
+    _pdf = to_pdf_ejecutivo(
+        df_ejec,
+        title="Stock Ejecutivo",
+        subtitle=f"Actualizado hasta {_gl_txt}  ·  {len(df_ejec)} SKUs"
+    )
     if _pdf:
-        st.download_button("📄 PDF ejecutivo", _pdf,
+        st.download_button("📄 PDF ejecutivo (A4 vertical)", _pdf,
             f"stock_ejecutivo_{_stamp}.pdf", "application/pdf",
             key="exp_ejec_pdf", width='stretch', type="primary")
     else:

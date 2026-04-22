@@ -13,3 +13,7 @@ gatherUsageStats = false
 headless = true
 enableXsrfProtection = false
 enableCORS = false
+# Servir archivos desde ./static/ en http://<host>:<port>/app/static/<file>
+# Usado por la pestaña Exportar Portal para exponer stock_portal.csv a
+# servicios web externos que lo consumen por HTTP GET.
+enableStaticServing = true
