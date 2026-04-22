@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.16.0"
+APP_VERSION = "v4.16.1"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.16.0":
+if st.session_state.get("_app_version") != "v4.16.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.16.0"
+    st.session_state["_app_version"] = "v4.16.1"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -2993,7 +2993,12 @@ def _render_tab_sku():
                 df["Valor_Compras"] / df["Compras"].replace(0, float("nan"))
             ).round(2).fillna(0.0)
 
-        def _safe(d, col): return d[col] if col in d.columns else 0
+        # Si la columna falta (sku_summary vacío), devolver Series de ceros
+        # indexado como el df: evita que el `.astype(int)` del resultado caiga
+        # sobre un int escalar (0) cuando TODAS las columnas están ausentes.
+        def _safe(d, col):
+            if col in d.columns: return d[col]
+            return pd.Series(0, index=d.index, dtype=int)
         df["✓ Cuadre"] = (
               _safe(df,"Compras")
             - _safe(df,"Dev. Proveedor")
@@ -6037,12 +6042,15 @@ def _render_tab_imp():
             _rerun_frag()
 
         if _btn_del and _ids_sel:
+            # Usar nombre distinto para no hacer local el `imp_df` del scope
+            # exterior — Python detecta la asignación y bloquea el read
+            # anterior con UnboundLocalError si se llama `imp_df = ...`.
             _before = len(imp_df)
-            imp_df = imp_df[~imp_df["ID"].isin(_ids_sel)].reset_index(drop=True)
-            imp_state["df"] = imp_df
-            _persist_importaciones(imp_df)
-            log(f"Importaciones: eliminados {_before - len(imp_df)} registro(s)")
-            st.success(f"🗑 Eliminados {_before - len(imp_df)} registro(s)")
+            _new_df = imp_df[~imp_df["ID"].isin(_ids_sel)].reset_index(drop=True)
+            imp_state["df"] = _new_df
+            _persist_importaciones(_new_df)
+            log(f"Importaciones: eliminados {_before - len(_new_df)} registro(s)")
+            st.success(f"🗑 Eliminados {_before - len(_new_df)} registro(s)")
             _rerun_frag()
 
     # ── Sección A: INGRESADAS ───────────────────────────────────
