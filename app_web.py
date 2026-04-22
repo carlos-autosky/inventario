@@ -5742,7 +5742,7 @@ def _get_github_token():
 
 def _github_api(method, path, token, body=None):
     """Llamada mínima a la API de GitHub con urllib. Retorna (status, json).
-    Raise RuntimeError con mensaje claro si hay 401/403/otros errores."""
+    Raise RuntimeError con mensaje claro y consejo si hay 401/403/404."""
     import urllib.request, urllib.error, json as _j
     _url = f"https://api.github.com{path}"
     _data = _j.dumps(body).encode("utf-8") if body is not None else None
@@ -5761,9 +5761,26 @@ def _github_api(method, path, token, body=None):
         _body = _e.read().decode("utf-8", errors="replace")
         try: _err = _j.loads(_body)
         except Exception: _err = {"message": _body[:200]}
+        _msg = _err.get('message', _body[:200])
+        # Consejos específicos por código de error
+        if _e.code == 401:
+            _hint = " → el token es inválido o expiró."
+        elif _e.code == 403:
+            _hint = (" → token válido pero sin permisos suficientes. "
+                     "Verifica que tenga el scope **gist** (read & write).")
+        elif _e.code == 404 and "/gists" in path:
+            _hint = (" → típicamente significa que el token NO tiene scope "
+                     "**gist**. GitHub responde 404 en lugar de 403 por "
+                     "seguridad. Regenera el token y activa el scope "
+                     "`gist` (classic PAT) o **Account permissions → "
+                     "Gists: Read and write** (fine-grained PAT).")
+        else:
+            _hint = ""
         raise RuntimeError(
-            f"GitHub API {_e.code}: {_err.get('message', _body[:200])}"
+            f"GitHub API {_e.code} en {method} {path}: {_msg}{_hint}"
         ) from None
+    except urllib.error.URLError as _e:
+        raise RuntimeError(f"No se pudo contactar GitHub ({_e.reason})") from None
 
 
 def _publish_html_to_gist(html_bytes, token):
