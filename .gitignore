@@ -14,6 +14,8 @@ toma_fisica.xlsx
 toma_fisica_rapida.xlsx
 ubicaciones_custom.json
 filtros_config.json
+# Logo subido por el usuario (el default "Logo AutoSky 500x300.png" sí va al repo)
+logo.png
 
 # Empaquetados
 *.zip

@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.9 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.10 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.9"
+APP_VERSION = "v4.10"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.9":
+if st.session_state.get("_app_version") != "v4.10":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.9"
+    st.session_state["_app_version"] = "v4.10"
 
-st.set_page_config(page_title="Inventario v4.9", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.10", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -158,6 +158,26 @@ def _persist_rapid(df):
 
 # Ubicaciones personalizadas — archivo JSON global compartido entre sesiones
 UBIC_CUSTOM_PATH = os.path.join(_BASE_DIR, "ubicaciones_custom.json")
+LOGO_PATH        = os.path.join(_BASE_DIR, "logo.png")
+
+def _get_logo_path():
+    """Devuelve la ruta del logo si existe, sino None.
+    Prioriza `logo.png` (subido por el usuario vía sidebar), luego
+    `Logo AutoSky 500x300.png` (default del repo)."""
+    if os.path.exists(LOGO_PATH):
+        return LOGO_PATH
+    _default = os.path.join(_BASE_DIR, "Logo AutoSky 500x300.png")
+    if os.path.exists(_default):
+        return _default
+    return None
+
+def _persist_logo(png_bytes):
+    try:
+        with _SHARED_WRITE_LOCK:
+            with open(LOGO_PATH, "wb") as f:
+                f.write(png_bytes)
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir logo: {ex}")
 FILTROS_PATH     = os.path.join(_BASE_DIR, "filtros_config.json")
 
 # Filtros globales compartidos (SKUs y Bodegas excluidas del análisis)
@@ -1078,31 +1098,62 @@ def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
     ncols = len(cols)
     last_col_letter = get_column_letter(ncols)
 
-    # Fila 1: Título
-    ws.merge_cells(f"A1:{last_col_letter}1")
-    ws["A1"] = title
-    ws["A1"].font = F_TIT
-    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[1].height = 26
+    # Logo en A1 (si existe). Ocupa 4 filas (rango A1:B4). Texto a partir de C1.
+    _logo_path = _get_logo_path()
+    _text_start_col = "A"
+    _has_logo = False
+    if _logo_path and os.path.exists(_logo_path):
+        try:
+            from openpyxl.drawing.image import Image as _XLImage
+            _img = _XLImage(_logo_path)
+            # Tamaño para ocupar aprox 2 columnas × 4 filas
+            _img.width  = 150   # pixels
+            _img.height = 90
+            _img.anchor = "A1"
+            ws.add_image(_img)
+            _has_logo = True
+            _text_start_col = "C"
+            # Ensanchar A y B para contener el logo
+            ws.column_dimensions["A"].width = 14
+            ws.column_dimensions["B"].width = 14
+        except Exception:
+            _has_logo = False
+
+    # Altura de filas 1-3 si hay logo (para que quepa)
+    if _has_logo:
+        ws.row_dimensions[1].height = 24
+        ws.row_dimensions[2].height = 22
+        ws.row_dimensions[3].height = 22
+
+    # Fila 1: Título (empieza en C si hay logo, sino en A)
+    _tit_range = f"{_text_start_col}1:{last_col_letter}1"
+    ws.merge_cells(_tit_range)
+    ws[f"{_text_start_col}1"] = title
+    ws[f"{_text_start_col}1"].font = F_TIT
+    ws[f"{_text_start_col}1"].alignment = Alignment(horizontal="left", vertical="center")
+    if not _has_logo:
+        ws.row_dimensions[1].height = 26
 
     # Fila 2: fecha
-    ws.merge_cells(f"A2:{last_col_letter}2")
-    ws["A2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
-    ws["A2"].font = F_SUB
-    ws["A2"].alignment = Alignment(horizontal="left")
+    _fecha_range = f"{_text_start_col}2:{last_col_letter}2"
+    ws.merge_cells(_fecha_range)
+    ws[f"{_text_start_col}2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    ws[f"{_text_start_col}2"].font = F_SUB
+    ws[f"{_text_start_col}2"].alignment = Alignment(horizontal="left", vertical="center")
 
     # Fila 3: estadísticas
     _n_skus = len(pivot_df)
     _n_ub   = len(ubic_cols)
     _total_u = int(pivot_df["Total"].sum()) if "Total" in pivot_df.columns else 0
-    ws.merge_cells(f"A3:{last_col_letter}3")
-    ws["A3"] = (f"{_n_skus:,} SKUs · {_n_ub} ubicaciones · "
-                f"{_total_u:,} unidades totales contadas")
-    ws["A3"].font = F_SUB
-    ws["A3"].alignment = Alignment(horizontal="left")
+    _stats_range = f"{_text_start_col}3:{last_col_letter}3"
+    ws.merge_cells(_stats_range)
+    ws[f"{_text_start_col}3"] = (f"{_n_skus:,} SKUs · {_n_ub} ubicaciones · "
+                                  f"{_total_u:,} unidades totales contadas")
+    ws[f"{_text_start_col}3"].font = F_SUB
+    ws[f"{_text_start_col}3"].alignment = Alignment(horizontal="left", vertical="center")
 
-    # Fila 4 vacía (separador)
-    ws.row_dimensions[4].height = 6
+    # Fila 4 vacía (separador — más espacio si hay logo que termina aquí)
+    ws.row_dimensions[4].height = 8 if _has_logo else 6
 
     # Fila 5: encabezados
     HDR_ROW = 5
@@ -1221,26 +1272,43 @@ def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
     C_TOTBG = colors.HexColor("#1E40AF")
     C_BRD   = colors.HexColor("#CBD5E1")
 
+    _logo_path = _get_logo_path()
+
     def _fp(canvas, doc):
         canvas.saveState()
+        _page_w, _page_h = landscape(A4)
+        # Logo en la esquina superior izquierda (si existe)
+        _text_x = 1.5*cm
+        if _logo_path and os.path.exists(_logo_path):
+            try:
+                from reportlab.lib.utils import ImageReader
+                _img_reader = ImageReader(_logo_path)
+                _iw, _ih = _img_reader.getSize()
+                _target_h = 1.1*cm
+                _target_w = _iw * (_target_h / _ih)
+                canvas.drawImage(_logo_path, 1.5*cm, _page_h - _target_h - 0.3*cm,
+                                  width=_target_w, height=_target_h,
+                                  preserveAspectRatio=True, mask="auto")
+                _text_x = 1.5*cm + _target_w + 0.4*cm
+            except Exception:
+                pass
         # Header: título + fecha a la derecha
         canvas.setFont("Helvetica-Bold", 10); canvas.setFillColor(C_HDR)
-        canvas.drawString(1.5*cm, landscape(A4)[1]-0.8*cm, title)
+        canvas.drawString(_text_x, _page_h-0.8*cm, title)
         canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
-        canvas.drawRightString(landscape(A4)[0]-1.5*cm, landscape(A4)[1]-0.8*cm,
+        canvas.drawRightString(_page_w-1.5*cm, _page_h-0.8*cm,
                                 datetime.now().strftime("%d/%m/%Y %H:%M"))
         # Línea horizontal
         canvas.setStrokeColor(C_HDR); canvas.setLineWidth(1.2)
-        canvas.line(1.5*cm, landscape(A4)[1]-1.0*cm,
-                    landscape(A4)[0]-1.5*cm, landscape(A4)[1]-1.0*cm)
+        canvas.line(1.5*cm, _page_h-1.5*cm, _page_w-1.5*cm, _page_h-1.5*cm)
         # Footer: paginación
         canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
-        canvas.drawCentredString(landscape(A4)[0]/2, 0.7*cm,
+        canvas.drawCentredString(_page_w/2, 0.7*cm,
                                   f"Página {doc.page}  ·  AutoSky Inventario")
         canvas.restoreState()
 
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
-                             topMargin=1.5*cm, bottomMargin=1.2*cm,
+                             topMargin=2.0*cm, bottomMargin=1.2*cm,
                              leftMargin=1.5*cm, rightMargin=1.5*cm,
                              title=title)
     styles = getSampleStyleSheet()
@@ -4999,6 +5067,44 @@ with T_AUD:
 # ── Panel visual de performance en el sidebar ───────────────────
 _perf("end")
 with st.sidebar:
+    # Logo corporativo — aparece en Excel/PDF ejecutivos
+    with st.expander("🏢 Logo corporativo (reportes)", expanded=False):
+        _logo_existente = _get_logo_path()
+        if _logo_existente:
+            try:
+                st.image(_logo_existente, caption="Logo actual (en reportes)",
+                         width='stretch')
+            except Exception:
+                pass
+        else:
+            st.caption("Aún no hay logo. Sube un PNG/JPG para incluirlo en "
+                       "los reportes Excel y PDF.")
+        _up_logo = st.file_uploader("Subir / reemplazar logo",
+                                     type=["png","jpg","jpeg"],
+                                     key="logo_upload",
+                                     label_visibility="collapsed")
+        _cl1, _cl2 = st.columns(2)
+        with _cl1:
+            if _up_logo is not None:
+                if st.button("💾 Guardar", key="logo_save", width='stretch',
+                             type="primary"):
+                    _persist_logo(_up_logo.getvalue())
+                    log(f"Logo actualizado: {_up_logo.name}")
+                    st.success("✓ Logo guardado")
+                    st.rerun()
+        with _cl2:
+            if os.path.exists(LOGO_PATH):
+                if st.button("🗑 Quitar", key="logo_remove", width='stretch',
+                             help="Elimina el logo subido. Si existe default, vuelve a él."):
+                    try:
+                        os.remove(LOGO_PATH)
+                        log("Logo eliminado")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error: {ex}")
+        st.caption("💡 Usa un PNG con fondo transparente para mejores resultados. "
+                   "Tamaño recomendado: 500×300 px o similar proporción.")
+
     with st.expander("⏱ Performance (últimos reruns)", expanded=False):
         _hist = _get_perf_history()["runs"]
         if _hist:
