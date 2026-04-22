@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.8.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.9 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.8.1"
+APP_VERSION = "v4.9"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.8.1":
+if st.session_state.get("_app_version") != "v4.9":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.8.1"
+    st.session_state["_app_version"] = "v4.9"
 
-st.set_page_config(page_title="Inventario v4.8.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.9", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1039,6 +1039,302 @@ def to_html(df, title="Reporte"):
 h1{{color:#1e3a5f}}table{{border-collapse:collapse;width:100%;font-size:11px}}</style></head>
 <body><h1>{title}</h1><p style='color:#6b7280;font-size:11px'>Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}</p>
 <table><thead><tr>{hdrs}</tr></thead><tbody>{rows}</tbody></table></body></html>""".encode()
+
+def _export_resumen_excel(pivot_df, ubic_cols, title="Resumen Toma Física"):
+    """Export ejecutivo en Excel con formato listo para imprimir:
+    - Título y metadatos en header
+    - Tabla con colores corporativos, zebra, bordes
+    - Fila TOTAL con fórmulas SUM por columna
+    - Freeze panes en SKU+Producto (izquierda) y 5 filas arriba
+    - Anchos adaptados para impresión en paisaje"""
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Resumen"
+
+    # Colores corporativos
+    C_HDR   = PatternFill("solid", fgColor="1E3A5F")  # azul oscuro
+    C_SUB   = PatternFill("solid", fgColor="0EA5E9")  # azul claro
+    C_ZEB1  = PatternFill("solid", fgColor="FFFFFF")
+    C_ZEB2  = PatternFill("solid", fgColor="F8FAFC")
+    C_TOT   = PatternFill("solid", fgColor="DBEAFE")  # azul muy claro total
+    C_TOTB  = PatternFill("solid", fgColor="1E40AF")  # azul oscuro total fila
+    F_HDR   = Font(bold=True, size=11, color="FFFFFF", name="Calibri")
+    F_TIT   = Font(bold=True, size=16, color="1E3A5F", name="Calibri")
+    F_SUB   = Font(bold=False, size=10, color="64748B", name="Calibri")
+    F_CELL  = Font(size=10, color="111827", name="Calibri")
+    F_NUM   = Font(size=10, color="111827", name="Calibri")
+    F_TOT   = Font(bold=True, size=10, color="1E40AF", name="Calibri")
+    F_TOTG  = Font(bold=True, size=11, color="FFFFFF", name="Calibri")
+    _side   = Side(style="thin", color="CBD5E1")
+    BRD     = Border(_side, _side, _side, _side)
+    _tside  = Side(style="medium", color="1E40AF")
+    TOT_BRD = Border(_tside, _tside, _tside, _tside)
+
+    cols = list(pivot_df.columns)
+    ncols = len(cols)
+    last_col_letter = get_column_letter(ncols)
+
+    # Fila 1: Título
+    ws.merge_cells(f"A1:{last_col_letter}1")
+    ws["A1"] = title
+    ws["A1"].font = F_TIT
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    # Fila 2: fecha
+    ws.merge_cells(f"A2:{last_col_letter}2")
+    ws["A2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    ws["A2"].font = F_SUB
+    ws["A2"].alignment = Alignment(horizontal="left")
+
+    # Fila 3: estadísticas
+    _n_skus = len(pivot_df)
+    _n_ub   = len(ubic_cols)
+    _total_u = int(pivot_df["Total"].sum()) if "Total" in pivot_df.columns else 0
+    ws.merge_cells(f"A3:{last_col_letter}3")
+    ws["A3"] = (f"{_n_skus:,} SKUs · {_n_ub} ubicaciones · "
+                f"{_total_u:,} unidades totales contadas")
+    ws["A3"].font = F_SUB
+    ws["A3"].alignment = Alignment(horizontal="left")
+
+    # Fila 4 vacía (separador)
+    ws.row_dimensions[4].height = 6
+
+    # Fila 5: encabezados
+    HDR_ROW = 5
+    for ci, c in enumerate(cols, 1):
+        cell = ws.cell(HDR_ROW, ci, str(c))
+        cell.fill = C_HDR
+        cell.font = F_HDR
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = BRD
+    ws.row_dimensions[HDR_ROW].height = 28
+
+    # Filas de datos (zebra)
+    DATA_START = HDR_ROW + 1
+    for ri, (_, row) in enumerate(pivot_df.iterrows(), DATA_START):
+        _fill = C_ZEB1 if ri % 2 == 1 else C_ZEB2
+        for ci, c in enumerate(cols, 1):
+            val = row[c]
+            cell = ws.cell(ri, ci, val if pd.notna(val) else None)
+            cell.fill = _fill
+            cell.border = BRD
+            if c in ("Código Producto", "Nombre Producto"):
+                cell.font = F_CELL
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            elif c == "Total":
+                cell.font = F_TOT
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                cell.number_format = "#,##0"
+            else:
+                cell.font = F_NUM
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                cell.number_format = "#,##0"
+
+    # Fila TOTAL con fórmulas SUM por columna numérica
+    TOT_ROW = DATA_START + len(pivot_df)
+    for ci, c in enumerate(cols, 1):
+        cell = ws.cell(TOT_ROW, ci)
+        cell.fill = C_TOTB
+        cell.font = F_TOTG
+        cell.border = TOT_BRD
+        if ci == 1:  # Primera columna: etiqueta
+            cell.value = "TOTAL GENERAL"
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+        elif c == "Nombre Producto":
+            cell.value = ""
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+        else:
+            letter = get_column_letter(ci)
+            cell.value = f"=SUM({letter}{DATA_START}:{letter}{TOT_ROW-1})"
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.number_format = "#,##0"
+    ws.row_dimensions[TOT_ROW].height = 24
+
+    # Anchos de columnas
+    for ci, c in enumerate(cols, 1):
+        letter = get_column_letter(ci)
+        if c == "Código Producto":
+            ws.column_dimensions[letter].width = 14
+        elif c == "Nombre Producto":
+            ws.column_dimensions[letter].width = 42
+        elif c == "Total":
+            ws.column_dimensions[letter].width = 14
+        else:
+            ws.column_dimensions[letter].width = max(13, min(22, len(str(c)) + 4))
+
+    # Freeze panes: tras las 2 primeras columnas y tras encabezados
+    _freeze_col = "C"  # tras Nombre Producto
+    if "Nombre Producto" not in cols:
+        _freeze_col = "B"  # solo tras SKU
+    ws.freeze_panes = f"{_freeze_col}{DATA_START}"
+
+    # Configuración de impresión: paisaje + ajustar a una página de ancho
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_options.horizontalCentered = True
+    ws.page_margins.left = ws.page_margins.right = 0.5
+    ws.page_margins.top = ws.page_margins.bottom = 0.7
+    ws.print_title_rows = f"{HDR_ROW}:{HDR_ROW}"  # repetir header en cada página
+
+    # Encabezado y pie de impresión
+    ws.oddHeader.left.text = title
+    ws.oddHeader.left.size = 10
+    ws.oddHeader.left.color = "1E3A5F"
+    ws.oddHeader.right.text = datetime.now().strftime("%d/%m/%Y %H:%M")
+    ws.oddHeader.right.size = 9
+    ws.oddHeader.right.color = "64748B"
+    ws.oddFooter.center.text = "Página &P de &N"
+    ws.oddFooter.center.size = 9
+    ws.oddFooter.center.color = "64748B"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _export_resumen_pdf(pivot_df, ubic_cols, title="Resumen Toma Física"):
+    """Export ejecutivo en PDF: landscape, tabla con totales al final,
+    header corporativo y pie con paginación."""
+    try:
+        from reportlab.lib.pagesizes import landscape, A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                        Paragraph, Spacer)
+    except ImportError:
+        return None
+
+    buf = io.BytesIO()
+    C_HDR   = colors.HexColor("#1E3A5F")
+    C_TXT   = colors.HexColor("#111827")
+    C_MUT   = colors.HexColor("#64748B")
+    C_SUB   = colors.HexColor("#F1F5F9")
+    C_ZEB   = colors.HexColor("#F8FAFC")
+    C_TOTBG = colors.HexColor("#1E40AF")
+    C_BRD   = colors.HexColor("#CBD5E1")
+
+    def _fp(canvas, doc):
+        canvas.saveState()
+        # Header: título + fecha a la derecha
+        canvas.setFont("Helvetica-Bold", 10); canvas.setFillColor(C_HDR)
+        canvas.drawString(1.5*cm, landscape(A4)[1]-0.8*cm, title)
+        canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+        canvas.drawRightString(landscape(A4)[0]-1.5*cm, landscape(A4)[1]-0.8*cm,
+                                datetime.now().strftime("%d/%m/%Y %H:%M"))
+        # Línea horizontal
+        canvas.setStrokeColor(C_HDR); canvas.setLineWidth(1.2)
+        canvas.line(1.5*cm, landscape(A4)[1]-1.0*cm,
+                    landscape(A4)[0]-1.5*cm, landscape(A4)[1]-1.0*cm)
+        # Footer: paginación
+        canvas.setFont("Helvetica", 8); canvas.setFillColor(C_MUT)
+        canvas.drawCentredString(landscape(A4)[0]/2, 0.7*cm,
+                                  f"Página {doc.page}  ·  AutoSky Inventario")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                             topMargin=1.5*cm, bottomMargin=1.2*cm,
+                             leftMargin=1.5*cm, rightMargin=1.5*cm,
+                             title=title)
+    styles = getSampleStyleSheet()
+    _sty_h  = ParagraphStyle("h", fontSize=16, textColor=C_HDR,
+                              fontName="Helvetica-Bold", spaceAfter=4)
+    _sty_s  = ParagraphStyle("s", fontSize=9, textColor=C_MUT,
+                              fontName="Helvetica", spaceAfter=12)
+
+    _n_skus = len(pivot_df)
+    _n_ub   = len(ubic_cols)
+    _total_u = int(pivot_df["Total"].sum()) if "Total" in pivot_df.columns else 0
+    sub = (f"{_n_skus:,} SKUs &nbsp;·&nbsp; {_n_ub} ubicaciones &nbsp;·&nbsp; "
+           f"<b>{_total_u:,} unidades totales</b>")
+
+    elements = [
+        Paragraph(title, _sty_h),
+        Paragraph(sub, _sty_s),
+    ]
+
+    cols = list(pivot_df.columns)
+    # Anchos proporcionales para A4 landscape
+    PW = landscape(A4)[0] - 3*cm
+    _wide_cols = {"Código Producto": 0.09, "Nombre Producto": 0.28, "Total": 0.08}
+    _n_ubic_cols = sum(1 for c in cols if c not in _wide_cols)
+    _remaining = 1 - sum(_wide_cols.get(c, 0) for c in cols if c in _wide_cols)
+    _each = _remaining / _n_ubic_cols if _n_ubic_cols else 0
+    cws = [PW * _wide_cols.get(c, _each) for c in cols]
+
+    # Construir data: encabezados + filas + TOTAL
+    def _fmt_cell(v, c):
+        if pd.isna(v) or v is None: return ""
+        if c in ("Código Producto", "Nombre Producto"):
+            return str(v)
+        try:
+            return f"{int(round(float(v))):,}"
+        except (ValueError, TypeError):
+            return str(v)
+
+    data = [cols]
+    for _, row in pivot_df.iterrows():
+        data.append([_fmt_cell(row[c], c) for c in cols])
+
+    # Fila TOTAL: sumar columnas numéricas
+    _tot = []
+    for c in cols:
+        if c == cols[0]:
+            _tot.append("TOTAL GENERAL")
+        elif c == "Nombre Producto":
+            _tot.append("")
+        else:
+            try:
+                s = pd.to_numeric(pivot_df[c], errors="coerce").fillna(0).sum()
+                _tot.append(f"{int(round(s)):,}")
+            except Exception:
+                _tot.append("")
+    data.append(_tot)
+
+    ts = TableStyle([
+        # Encabezado
+        ("BACKGROUND", (0,0), (-1,0), C_HDR),
+        ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+        ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+        ("ALIGN",      (0,0), (-1,0), "CENTER"),
+        ("VALIGN",     (0,0), (-1,0), "MIDDLE"),
+        ("FONTSIZE",   (0,0), (-1,-1), 8),
+        ("TOPPADDING", (0,0), (-1,0), 6),
+        ("BOTTOMPADDING", (0,0), (-1,0), 6),
+        # Body
+        ("VALIGN",     (0,1), (-1,-1), "MIDDLE"),
+        ("FONTNAME",   (0,1), (-1,-2), "Helvetica"),
+        ("ALIGN",      (2,1), (-1,-2), "RIGHT"),  # a partir de col 3 (no SKU/Nombre)
+        ("ALIGN",      (0,1), (0,-2),  "LEFT"),   # SKU izquierda
+        ("ALIGN",      (1,1), (1,-2),  "LEFT"),   # Nombre izquierda (si existe)
+        ("GRID",       (0,0), (-1,-1), 0.4, C_BRD),
+        ("TOPPADDING", (0,1), (-1,-2), 3),
+        ("BOTTOMPADDING", (0,1), (-1,-2), 3),
+        # Zebra
+        ("ROWBACKGROUNDS", (0,1), (-1,-2), [colors.white, C_ZEB]),
+        # Fila TOTAL
+        ("BACKGROUND", (0,-1), (-1,-1), C_TOTBG),
+        ("TEXTCOLOR",  (0,-1), (-1,-1), colors.white),
+        ("FONTNAME",   (0,-1), (-1,-1), "Helvetica-Bold"),
+        ("FONTSIZE",   (0,-1), (-1,-1), 9),
+        ("TOPPADDING", (0,-1), (-1,-1), 8),
+        ("BOTTOMPADDING", (0,-1), (-1,-1), 8),
+    ])
+
+    t = Table(data, colWidths=cws, repeatRows=1)
+    t.setStyle(ts)
+    elements.append(t)
+
+    doc.build(elements, onFirstPage=_fp, onLaterPages=_fp)
+    return buf.getvalue()
+
 
 def to_pdf(df, title="Reporte"):
     try:
@@ -3695,25 +3991,32 @@ def _render_resumen_fragment():
     st.dataframe(pivot_display, width='stretch', hide_index=True,
                  column_config=_col_cfg, height=560)
 
-    # Export
-    st.markdown("#### 📥 Exportar resumen")
+    # Export ejecutivo (listo para imprimir, con totales por columna)
+    st.markdown("#### 📥 Exportar resumen ejecutivo")
+    st.caption(
+        "Los exports llevan formato corporativo: título, fecha, encabezados "
+        "destacados, fila de TOTALES al final (sumas por columna), paisaje con "
+        "repetición de header entre páginas. Listos para imprimir o enviar."
+    )
+    _fecha_nombre = datetime.now().strftime("%Y%m%d_%H%M")
     ec1, ec2 = st.columns(2)
     with ec1:
-        st.download_button("📊 Excel",
-            to_xl(pivot_display),
-            "resumen_toma_fisica.xlsx",
+        st.download_button("📊 Excel ejecutivo",
+            _export_resumen_excel(pivot_display, _ordered, "Resumen Toma Física"),
+            f"resumen_toma_fisica_{_fecha_nombre}.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width='stretch', key="res_xl")
     with ec2:
-        _pdf = to_pdf(pivot_display, "Resumen Toma Física")
+        _pdf = _export_resumen_pdf(pivot_display, _ordered, "Resumen Toma Física")
         if _pdf:
-            st.download_button("📄 PDF",
-                _pdf, "resumen_toma_fisica.pdf",
+            st.download_button("📄 PDF ejecutivo",
+                _pdf, f"resumen_toma_fisica_{_fecha_nombre}.pdf",
                 "application/pdf",
                 width='stretch', key="res_pdf")
         else:
             st.button("📄 PDF", disabled=True, width='stretch',
-                     key="res_pdf_disabled")
+                     key="res_pdf_disabled",
+                     help="Instalar reportlab: `pip install reportlab`")
 
     with st.expander("🧾 Historial completo de movimientos"):
         _hist = rap_df.sort_values("Fecha", ascending=False).reset_index(drop=True)
