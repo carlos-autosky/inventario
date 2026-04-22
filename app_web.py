@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.7.1 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.8 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.7.1"
+APP_VERSION = "v4.8"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.7.1":
+if st.session_state.get("_app_version") != "v4.8":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.7.1"
+    st.session_state["_app_version"] = "v4.8"
 
-st.set_page_config(page_title="Inventario v4.7.1", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.8", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1666,8 +1666,8 @@ _perf("main_kpis_done")
 
 # ── Pestañas ─────────────────────────────────────────────────────
 tabs=st.tabs(["🏪 Inv×Bodega","🔍 Detalle SKU","📊 SKU×Bodega","👥 Muestras",
-              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","📝 Log"])
-(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_LOG)=tabs
+              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","🔍 Auditoría"])
+(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_AUD)=tabs
 _perf("tabs_defined")
 
 excl_s=list(st.session_state.excluded_skus)
@@ -4468,11 +4468,190 @@ with T_PHY:
     with p3:
         _render_comparacion_fragment()
 
-# ══ TAB 10 LOG ══════════════════════════════════════════════════
-with T_LOG:
-    if st.button("🗑 Limpiar",key="lc"): st.session_state.log=[]
-    for e in st.session_state.log: st.text(e)
-    if not st.session_state.log: st.info("Sin actividad.")
+# ══ TAB 10 AUDITORÍA ═══════════════════════════════════════════
+@_fragment
+def _render_tab_aud():
+    eng = st.session_state.engine
+    if eng.raw_df is None:
+        st.info("Cargue un archivo para ver la auditoría.")
+        return
+
+    st.markdown("### 🔍 Auditoría de datos")
+    st.caption(
+        "Revisa la cobertura del pipeline: cuántos movimientos se clasifican, "
+        "cuáles quedan fuera y por qué. Útil para detectar registros con "
+        "formato no estándar que no entran en los KPIs ni cuadres."
+    )
+
+    df = eng.raw_df.copy()
+    # Aplicar las mismas reglas que engine.analyze() para este reporte.
+    ref  = df["Referencia"].fillna("").astype(str).str.upper()
+    typ  = df["Tipo"].fillna("").astype(str).str.upper()
+    desc = df["Descripción"].fillna("").astype(str).str.upper()
+
+    df["_ib"] = (typ == "EGR") & desc.str.contains("BAJA DE INVENTARIO", regex=False, na=False)
+    df["_ic"] = (typ == "ING") & (
+        ref.str.startswith("NCT") |
+        desc.str.contains("BAJA DE FACTURA", regex=False, na=False)
+    )
+    df["_ip"] = (typ == "ING") & ~df["_ic"] & (
+        ref.str.startswith("FAC") |
+        ref.str.startswith("NVE") |
+        desc.str.contains("FACTURA DE COMPRA", regex=False, na=False) |
+        desc.str.contains("COMPRA INVENTARIO", regex=False, na=False) |
+        desc.str.contains("COMPRA DE INVENTARIO", regex=False, na=False)
+    )
+    df["_is"] = (typ == "EGR") & ref.str.startswith("FAC") & ~df["_ib"]
+    df["_ir"] = (typ == "EGR") & ref.str.startswith("NCT") & ~df["_ib"]
+    df["_it"] = typ == "TRA"
+    df["_any"] = df["_ip"] | df["_ic"] | df["_ib"] | df["_is"] | df["_ir"] | df["_it"]
+
+    total = len(df)
+    cls   = int(df["_any"].sum())
+    noc   = total - cls
+
+    # ── KPIs superiores ──
+    k1,k2,k3,k4,k5 = st.columns(5)
+    k1.metric("Movimientos totales", f"{total:,}")
+    k2.metric("Clasificados", f"{cls:,}", f"{(cls/total*100) if total else 0:.1f}%")
+    k3.metric("Sin clasificar", f"{noc:,}",
+              f"−{(noc/total*100) if total else 0:.1f}%" if noc else "0%",
+              delta_color="inverse")
+    _rng = (df["Fecha"].max() - df["Fecha"].min()).days if total else 0
+    k4.metric("Rango (días)", f"{_rng:,}")
+    k5.metric("SKUs únicos", f"{df['Código Producto'].nunique():,}")
+
+    # ── Resumen por categoría ──
+    st.markdown("#### 📊 Desglose por clasificación")
+    _cats = [
+        ("💰 Compras",           "_ip",  "ING + FAC/NVE o descripción de compra"),
+        ("↩ Dev. Cliente",       "_ic",  "ING + NCT o descripción 'BAJA DE FACTURA'"),
+        ("🛒 Ventas",             "_is",  "EGR + FAC (y no es baja)"),
+        ("📤 Dev. Proveedor",    "_ir",  "EGR + NCT (y no es baja)"),
+        ("🔥 Baja de Inventario","_ib",  "EGR + descripción 'BAJA DE INVENTARIO'"),
+        ("🔄 Transferencias",    "_it",  "Tipo TRA"),
+    ]
+    rows = []
+    for nom, col, regla in _cats:
+        n = int(df[col].sum())
+        u = float(df.loc[df[col], "Cantidad"].sum())
+        v = float(df.loc[df[col], "Valor Total"].sum())
+        rows.append({
+            "Categoría": nom,
+            "Movimientos": n,
+            "Unidades": int(u),
+            "Valor total": f"${v:,.2f}",
+            "% del total": f"{(n/total*100) if total else 0:.1f}%",
+            "Regla": regla,
+        })
+    rows.append({
+        "Categoría": "⚠ Sin clasificar",
+        "Movimientos": noc,
+        "Unidades": int(df.loc[~df["_any"], "Cantidad"].sum()),
+        "Valor total": f"${float(df.loc[~df['_any'], 'Valor Total'].sum()):,.2f}",
+        "% del total": f"{(noc/total*100) if total else 0:.1f}%",
+        "Regla": "ninguna — no entra en el análisis",
+    })
+    _cat_df = pd.DataFrame(rows)
+    st.dataframe(_cat_df, width='stretch', hide_index=True)
+
+    # ── Filas sin clasificar — detalle ──
+    st.markdown("#### ⚠ Filas sin clasificar")
+    no_cls = df[~df["_any"]].copy()
+
+    if no_cls.empty:
+        st.success("✅ Cobertura 100%. Todos los movimientos entran en alguna categoría.")
+    else:
+        # Separar ajustes con cantidad 0 (inofensivos) del resto
+        _zero = (pd.to_numeric(no_cls["Cantidad"], errors="coerce").fillna(0) == 0)
+        no_cls_real = no_cls[~_zero]
+        no_cls_zero = no_cls[_zero]
+
+        if not no_cls_real.empty:
+            _u = float(no_cls_real["Cantidad"].sum())
+            _v = float(no_cls_real["Valor Total"].sum())
+            st.error(
+                f"❌ Hay **{len(no_cls_real):,}** filas con cantidad > 0 que NO se "
+                f"están considerando en el análisis (total: **{int(_u):,} u · ${_v:,.2f}**). "
+                f"Estas filas impactan el cuadre de stock. Revísalas:"
+            )
+            _show_cols = ["Fecha","Código Producto","Nombre Producto","Tipo",
+                          "Referencia","Descripción","Cantidad","Valor Total",
+                          "Bodega Origen","Bodega Destino"]
+            _show_cols = [c for c in _show_cols if c in no_cls_real.columns]
+            _show = no_cls_real[_show_cols].copy()
+            # Tipos consistentes para el data editor
+            for c in ["Fecha","Código Producto","Nombre Producto","Tipo",
+                      "Referencia","Descripción","Bodega Origen","Bodega Destino"]:
+                if c in _show.columns:
+                    _show[c] = _show[c].fillna("").astype(str)
+            st.dataframe(_show, width='stretch', hide_index=True, height=320)
+
+            # Patrones de las filas sin clasificar
+            st.markdown("##### 🔎 Patrones detectados")
+            _pat_rows = []
+            _combo = no_cls_real.groupby([
+                no_cls_real["Tipo"].fillna("").astype(str).str.upper(),
+                no_cls_real["Referencia"].fillna("").astype(str).str.upper().str[:3].rename("Ref[:3]"),
+            ]).size().reset_index(name="Cantidad")
+            st.dataframe(_combo, width='stretch', hide_index=True)
+
+            st.caption(
+                "💡 Si hay un patrón recurrente (ej: todas las filas con un tipo + prefijo "
+                "específico), puede valer la pena ampliar las reglas del engine para "
+                "incluirlas en el análisis."
+            )
+
+        if not no_cls_zero.empty:
+            with st.expander(f"ℹ Filas sin clasificar con Cantidad=0 ({len(no_cls_zero)}) — no afectan stock"):
+                _zc = no_cls_zero[["Fecha","Código Producto","Tipo","Referencia","Descripción"]].copy()
+                for c in _zc.columns:
+                    _zc[c] = _zc[c].fillna("").astype(str)
+                st.dataframe(_zc, width='stretch', hide_index=True)
+
+    # ── Calidad de datos: campos clave vacíos ──
+    st.markdown("#### 📋 Calidad de datos")
+    issues = []
+    _n_fecha_nan  = int(df["Fecha"].isna().sum())
+    _n_sku_nan    = int(df["Código Producto"].fillna("").astype(str).str.strip().eq("").sum())
+    _n_tipo_nan   = int(df["Tipo"].fillna("").astype(str).str.strip().eq("").sum())
+    _n_cant_0     = int((pd.to_numeric(df["Cantidad"], errors="coerce").fillna(0) == 0).sum())
+    _n_cant_neg   = int((pd.to_numeric(df["Cantidad"], errors="coerce").fillna(0) < 0).sum())
+    if _n_fecha_nan: issues.append(("⚠", f"{_n_fecha_nan} filas sin Fecha (se excluyen del análisis)"))
+    if _n_sku_nan:   issues.append(("⚠", f"{_n_sku_nan} filas sin Código Producto"))
+    if _n_tipo_nan:  issues.append(("⚠", f"{_n_tipo_nan} filas sin Tipo"))
+    if _n_cant_0:    issues.append(("ℹ", f"{_n_cant_0} filas con Cantidad=0 (ajustes típicamente)"))
+    if _n_cant_neg:  issues.append(("⚠", f"{_n_cant_neg} filas con Cantidad negativa (posible error de captura)"))
+    if not issues:
+        st.success("✅ No hay problemas de calidad detectados en campos clave.")
+    else:
+        for ico, msg in issues:
+            if ico == "⚠": st.warning(f"{ico} {msg}")
+            else:          st.info(f"{ico} {msg}")
+
+    # ── Export del reporte ──
+    st.markdown("#### 📥 Exportar auditoría")
+    ec1, ec2 = st.columns(2)
+    with ec1:
+        st.download_button("📊 Categorías a Excel", to_xl(_cat_df),
+            "auditoria_categorias.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width='stretch', key="aud_cat_xl")
+    with ec2:
+        if not no_cls.empty:
+            _no_cls_export = no_cls[["Fecha","Código Producto","Nombre Producto",
+                                      "Tipo","Referencia","Descripción","Cantidad",
+                                      "Valor Total","Bodega Origen","Bodega Destino"]].copy()
+            for c in _no_cls_export.columns:
+                if _no_cls_export[c].dtype == object:
+                    _no_cls_export[c] = _no_cls_export[c].fillna("").astype(str)
+            st.download_button("⚠ Sin clasificar a Excel", to_xl(_no_cls_export),
+                "auditoria_sin_clasificar.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch', key="aud_noc_xl")
+
+with T_AUD:
+    _render_tab_aud()
 
 # ── Panel visual de performance en el sidebar ───────────────────
 _perf("end")
