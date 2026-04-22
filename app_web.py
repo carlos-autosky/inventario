@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.14.2"
+APP_VERSION = "v4.14.3"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.14.2":
+if st.session_state.get("_app_version") != "v4.14.3":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.14.2"
+    st.session_state["_app_version"] = "v4.14.3"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -5709,16 +5709,37 @@ def _render_tab_exp():
         else:
             st.info("Aún no se ha publicado ninguna versión del CSV.")
 
-    # URL pública — intenta derivar host/puerto del request de Streamlit
+    # URL pública — derivar host/proto del request entrante (Host header),
+    # así funciona tanto en local como en Streamlit Cloud (dominio propio)
+    # sin hardcodear valores.
     if _exists:
-        _port = os.environ.get("STREAMLIT_SERVER_PORT", "8501")
-        _rel_url = f"/app/static/stock_portal.csv"
-        _local_url = f"http://localhost:{_port}{_rel_url}"
-        st.code(_local_url, language=None)
+        _rel_url = "/app/static/stock_portal.csv"
+        _host = None
+        _proto = None
+        try:
+            _hdrs = st.context.headers  # type: ignore[attr-defined]
+            # Header names pueden venir en cualquier caso; probar variantes.
+            _host = (_hdrs.get("Host") or _hdrs.get("host") or
+                     _hdrs.get(":authority"))
+            _proto = (_hdrs.get("X-Forwarded-Proto") or
+                      _hdrs.get("x-forwarded-proto"))
+        except Exception:
+            pass
+        if not _host:
+            # Fallback: puerto local si no hay header (ej: script standalone)
+            _port = os.environ.get("STREAMLIT_SERVER_PORT", "8501")
+            _host = f"localhost:{_port}"
+        if not _proto:
+            # Streamlit Cloud siempre es HTTPS; local asumimos HTTP.
+            _proto = ("https" if (".streamlit.app" in _host or
+                                   "streamlit.io" in _host)
+                      else "http")
+        _public_url = f"{_proto}://{_host}{_rel_url}"
+        st.markdown("**URL pública (para el servicio externo):**")
+        st.code(_public_url, language=None)
         st.caption(
-            "Reemplaza `localhost` por la IP o dominio público del servidor "
-            "cuando el servicio externo consulte desde fuera de la red "
-            "local. El archivo se actualiza sólo cuando pulsas **Publicar**."
+            "Esta es la URL que el portal destino debe consumir vía HTTP GET. "
+            "El archivo se actualiza sólo cuando pulsas **Publicar**."
         )
 
     st.divider()
