@@ -1,4 +1,0 @@
-# Marker file para que Git trackee este directorio vacío.
-# Streamlit (con server.enableStaticServing=true) sirve los archivos que
-# aparezcan aquí en /app/static/<archivo>. La pestaña Exportar Portal
-# escribe stock_portal.csv a este directorio al pulsar "Publicar".
