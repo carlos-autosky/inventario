@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.12.2"
+APP_VERSION = "v4.13"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.12.2":
+if st.session_state.get("_app_version") != "v4.13":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.12.2"
+    st.session_state["_app_version"] = "v4.13"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -2335,8 +2335,8 @@ _perf("main_kpis_done")
 
 # ── Pestañas ─────────────────────────────────────────────────────
 tabs=st.tabs(["🏪 Inv×Bodega","🔍 Detalle SKU","📊 SKU×Bodega","👥 Muestras",
-              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","🔍 Auditoría"])
-(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_AUD)=tabs
+              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","🔍 Auditoría","📤 Exportar Portal"])
+(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_AUD,T_EXP)=tabs
 _perf("tabs_defined")
 
 excl_s=list(st.session_state.excluded_skus)
@@ -5373,6 +5373,106 @@ def _render_tab_aud():
 
 with T_AUD:
     _render_tab_aud()
+
+# ══ TAB 11 EXPORTAR PORTAL ══════════════════════════════════════
+@_fragment
+def _render_tab_exp():
+    r = st.session_state.get("result")
+    eng = st.session_state.engine
+    if r is None or eng.raw_df is None:
+        st.info("Cargue un archivo y ejecute el análisis para exportar.")
+        return
+
+    st.markdown("### 📤 Exportar Portal")
+    st.caption(
+        "Exportaciones bajo demanda con datos de Stock Disponible "
+        "(solo Bodega Principal). Los SKUs excluidos en el panel lateral "
+        "se omiten automáticamente."
+    )
+
+    # ── Base: sku_summary + fecha último movimiento por SKU ─────────
+    base = r.sku_summary[["Código Producto", "Nombre Producto",
+                          "Stock Disponible"]].copy()
+    # Fecha del último movimiento por SKU (sobre df ya filtrado por corte/bodega)
+    _last = (r.filtered.groupby("Código Producto")["Fecha"].max()
+                    .rename("Fecha Último Movimiento").reset_index())
+    base = base.merge(_last, on="Código Producto", how="left")
+    base["Stock Disponible"] = base["Stock Disponible"].fillna(0).astype(int)
+    base["Fecha Último Movimiento"] = pd.to_datetime(
+        base["Fecha Último Movimiento"], errors="coerce"
+    ).dt.strftime("%d/%m/%Y")
+    base = base.sort_values("Código Producto").reset_index(drop=True)
+
+    # Fecha global "actualizado hasta" (último movimiento del dataset filtrado)
+    _global_last = r.filtered["Fecha"].max()
+    _gl_txt = (pd.to_datetime(_global_last).strftime("%d/%m/%Y")
+               if pd.notna(_global_last) else "—")
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("SKUs exportables", f"{len(base):,}")
+    k2.metric("Con stock > 0",
+              f"{int((base['Stock Disponible'] > 0).sum()):,}")
+    k3.metric("Actualizado hasta", _gl_txt)
+
+    # ── Sección A: datos para portal web ─────────────────────────────
+    st.markdown("#### 🌐 Datos para portal web")
+    st.caption(
+        "Tres columnas: SKU · Stock Disponible · Fecha último movimiento. "
+        "Formatos disponibles: CSV, TXT (separado por tabs), HTML."
+    )
+    df_portal = base[["Código Producto", "Stock Disponible",
+                      "Fecha Último Movimiento"]].rename(
+        columns={"Código Producto": "SKU"})
+
+    st.dataframe(df_portal, width='stretch', hide_index=True, height=320)
+
+    _stamp = _now_ec().strftime("%Y%m%d_%H%M")
+    _csv = df_portal.to_csv(index=False).encode("utf-8-sig")
+    _tsv = df_portal.to_csv(index=False, sep="\t").encode("utf-8")
+    _html = to_html(df_portal, f"Stock Disponible — Portal ({_gl_txt})")
+
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        st.download_button("📄 CSV", _csv,
+            f"stock_portal_{_stamp}.csv", "text/csv",
+            key="exp_portal_csv", width='stretch')
+    with e2:
+        st.download_button("📝 TXT", _tsv,
+            f"stock_portal_{_stamp}.txt", "text/plain",
+            key="exp_portal_txt", width='stretch')
+    with e3:
+        st.download_button("🌐 HTML", _html,
+            f"stock_portal_{_stamp}.html", "text/html",
+            key="exp_portal_htm", width='stretch')
+
+    st.divider()
+
+    # ── Sección B: PDF ejecutivo con logo/header/footer ──────────────
+    st.markdown("#### 📄 PDF ejecutivo")
+    st.caption(
+        "Incluye SKU, Nombre Producto, Stock Disponible y Fecha último "
+        "movimiento. El encabezado muestra la fecha de corte global para "
+        "saber hasta qué punto están actualizados los datos."
+    )
+    df_ejec = base[["Código Producto", "Nombre Producto",
+                    "Stock Disponible", "Fecha Último Movimiento"]].rename(
+        columns={"Código Producto": "SKU",
+                 "Nombre Producto": "Nombre Producto"})
+
+    st.dataframe(df_ejec, width='stretch', hide_index=True, height=320)
+
+    _title = f"Stock Ejecutivo — Actualizado hasta {_gl_txt}"
+    _pdf = to_pdf(df_ejec, _title)
+    if _pdf:
+        st.download_button("📄 PDF ejecutivo", _pdf,
+            f"stock_ejecutivo_{_stamp}.pdf", "application/pdf",
+            key="exp_ejec_pdf", width='stretch', type="primary")
+    else:
+        st.button("📄 PDF ejecutivo (reportlab no instalado)",
+                 disabled=True, key="exp_ejec_pdf_x", width='stretch')
+
+with T_EXP:
+    _render_tab_exp()
 
 # ── Panel visual de performance en el sidebar ───────────────────
 _perf("end")
