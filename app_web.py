@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.15"
+APP_VERSION = "v4.15.1"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.15":
+if st.session_state.get("_app_version") != "v4.15.1":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.15"
+    st.session_state["_app_version"] = "v4.15.1"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -5721,6 +5721,116 @@ PORTAL_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "static")
 PORTAL_CSV_PATH = os.path.join(PORTAL_STATIC_DIR, "stock_portal.csv")
 PORTAL_HTML_PATH = os.path.join(PORTAL_STATIC_DIR, "stock_ejecutivo.html")
+GIST_ID_CACHE = os.path.join(PORTAL_STATIC_DIR, ".autosky_gist_id")
+GIST_DESCRIPTION = "autosky-stock-ejecutivo"
+GIST_FILENAME = "stock_ejecutivo.html"
+
+
+def _get_github_token():
+    """Lee el token de GitHub desde Streamlit secrets o env var. Prueba
+    varias claves comunes para compatibilidad con setups existentes."""
+    for _k in ("GITHUB_GIST_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        try:
+            _v = st.secrets.get(_k)
+            if _v: return str(_v).strip()
+        except Exception:
+            pass
+        _v = os.environ.get(_k)
+        if _v: return str(_v).strip()
+    return None
+
+
+def _github_api(method, path, token, body=None):
+    """Llamada mínima a la API de GitHub con urllib. Retorna (status, json).
+    Raise RuntimeError con mensaje claro si hay 401/403/otros errores."""
+    import urllib.request, urllib.error, json as _j
+    _url = f"https://api.github.com{path}"
+    _data = _j.dumps(body).encode("utf-8") if body is not None else None
+    _req = urllib.request.Request(_url, data=_data, method=method)
+    _req.add_header("Authorization", f"Bearer {token}")
+    _req.add_header("Accept", "application/vnd.github+json")
+    _req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    _req.add_header("User-Agent", "AutoSky-Inventario")
+    if _data is not None:
+        _req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(_req, timeout=20) as _rs:
+            _body = _rs.read().decode("utf-8")
+            return _rs.status, _j.loads(_body) if _body else {}
+    except urllib.error.HTTPError as _e:
+        _body = _e.read().decode("utf-8", errors="replace")
+        try: _err = _j.loads(_body)
+        except Exception: _err = {"message": _body[:200]}
+        raise RuntimeError(
+            f"GitHub API {_e.code}: {_err.get('message', _body[:200])}"
+        ) from None
+
+
+def _publish_html_to_gist(html_bytes, token):
+    """Crea o actualiza un gist público con el HTML. Devuelve
+    (gist_id, raw_url, user_login). Busca por descripción para reusar el
+    mismo gist entre sesiones. Cachea gist_id en disco para publicaciones
+    rápidas posteriores."""
+    # 1) Intentar reusar gist_id cacheado
+    _gid = None
+    if os.path.exists(GIST_ID_CACHE):
+        try:
+            with open(GIST_ID_CACHE, "r", encoding="utf-8") as _f:
+                _gid = _f.read().strip() or None
+        except Exception:
+            _gid = None
+
+    # 2) Verificar que el gist cacheado sigue existiendo
+    if _gid:
+        try:
+            _, _info = _github_api("GET", f"/gists/{_gid}", token)
+            _user_login = _info.get("owner", {}).get("login") or ""
+        except RuntimeError as _e:
+            # Gist borrado o token cambió — invalidar cache
+            _gid = None
+            _user_login = ""
+
+    # 3) Si no hay gist cacheado, buscar por descripción entre los del user
+    if not _gid:
+        try:
+            _, _my = _github_api("GET", "/gists?per_page=100", token)
+        except RuntimeError:
+            _my = []
+        for _g in (_my or []):
+            if _g.get("description") == GIST_DESCRIPTION:
+                _gid = _g.get("id")
+                _user_login = _g.get("owner", {}).get("login") or ""
+                break
+
+    _content_txt = html_bytes.decode("utf-8")
+
+    # 4) Actualizar o crear
+    if _gid:
+        _, _info = _github_api("PATCH", f"/gists/{_gid}", token, body={
+            "description": GIST_DESCRIPTION,
+            "files": {GIST_FILENAME: {"content": _content_txt}},
+        })
+    else:
+        _, _info = _github_api("POST", "/gists", token, body={
+            "description": GIST_DESCRIPTION,
+            "public": True,
+            "files": {GIST_FILENAME: {"content": _content_txt}},
+        })
+        _gid = _info.get("id")
+
+    _user_login = _info.get("owner", {}).get("login") or ""
+
+    # 5) Persistir gist_id para próximas publicaciones
+    try:
+        os.makedirs(PORTAL_STATIC_DIR, exist_ok=True)
+        with open(GIST_ID_CACHE, "w", encoding="utf-8") as _f:
+            _f.write(_gid)
+    except Exception:
+        pass
+
+    # URL raw estable (siempre apunta a la última versión del archivo)
+    _raw_url = f"https://gist.githubusercontent.com/{_user_login}/{_gid}/raw/{GIST_FILENAME}"
+    return _gid, _raw_url, _user_login
 
 def _build_portal_csv_bytes(df_portal, fecha_corte_txt):
     """CSV con primera línea de metadata (Fecha Corte: DD/MM/YYYY), luego
@@ -5902,64 +6012,92 @@ def _render_tab_exp():
 
     st.divider()
 
-    # ── Sección C: Vista móvil ejecutiva publicada ───────────────────
+    # ── Sección C: Vista móvil ejecutiva publicada (GitHub Gist) ────
     st.markdown("#### 📱 Vista móvil ejecutiva")
     st.caption(
         "Publica una página HTML responsive (optimizada para celular) con "
-        "el stock actual de todos los SKUs. Compártela por WhatsApp con un "
-        "clic — el destinatario abre la URL y ve el reporte directamente "
-        "en su teléfono."
+        "el stock actual de todos los SKUs a un Gist público de GitHub. "
+        "La URL es permanente; cada re-publicación actualiza el mismo Gist. "
+        "Compártela por WhatsApp con un clic."
     )
 
-    # Construir HTML móvil en memoria para descarga rápida
+    # Construir HTML móvil en memoria (para descarga offline + publicación)
     _html_mobile = to_html_mobile(df_ejec, _gl_txt)
 
-    # Estado del archivo publicado
-    _exists_html = os.path.exists(PORTAL_HTML_PATH)
-    _pub_html_info = ""
-    if _exists_html:
+    # Estado publicación — leer gist_id cacheado si existe
+    _cached_gid = None
+    _cached_owner = None
+    if os.path.exists(GIST_ID_CACHE):
         try:
-            _mt_h = os.path.getmtime(PORTAL_HTML_PATH)
-            _pub_html_info = datetime.fromtimestamp(_mt_h, _EC_TZ).replace(
-                tzinfo=None).strftime("%d/%m/%Y %H:%M GMT-5")
+            with open(GIST_ID_CACHE, "r", encoding="utf-8") as _f:
+                _cached_gid = _f.read().strip() or None
         except Exception:
-            _pub_html_info = "—"
+            _cached_gid = None
+    # Guardamos owner en session_state para no hacer otra llamada a la API
+    # solo para mostrar el URL cacheado.
+    if _cached_gid:
+        _cached_owner = st.session_state.get("_gist_owner_cache")
+
+    _token = _get_github_token()
+    _token_ok = bool(_token)
+
+    if not _token_ok:
+        st.warning(
+            "⚠ No hay token de GitHub configurado. Agrégalo en "
+            "**Settings → Secrets** de Streamlit Cloud con una de estas "
+            "claves: `GITHUB_GIST_TOKEN`, `GITHUB_TOKEN` o `GH_TOKEN`. "
+            "El token debe tener el scope **gist** (read & write)."
+        )
 
     mc1, mc2 = st.columns([1, 2])
     with mc1:
-        if st.button("📡 Publicar vista móvil",
-                     key="exp_mobile_publish", type="primary",
-                     width='stretch'):
-            try:
-                os.makedirs(PORTAL_STATIC_DIR, exist_ok=True)
-                with open(PORTAL_HTML_PATH, "wb") as _f:
-                    _f.write(_html_mobile)
-                log(f"Publicado stock_ejecutivo.html ({len(df_ejec)} SKUs, "
-                    f"corte {_gl_txt})")
-                st.success("✓ Publicado — URL y botón WhatsApp abajo")
-                st.rerun()
-            except Exception as _e:
-                st.error(f"Error al publicar: {_e}")
+        _btn = st.button("📡 Publicar vista móvil",
+                          key="exp_mobile_publish", type="primary",
+                          width='stretch', disabled=not _token_ok)
+        if _btn and _token_ok:
+            with st.spinner("Publicando al Gist…"):
+                try:
+                    _gid, _raw_url, _owner = _publish_html_to_gist(
+                        _html_mobile, _token)
+                    st.session_state["_gist_owner_cache"] = _owner
+                    st.session_state["_gist_last_url"]    = _raw_url
+                    st.session_state["_gist_last_time"]   = \
+                        _now_ec().strftime("%d/%m/%Y %H:%M GMT-5")
+                    log(f"Publicado Gist {_gid} ({len(df_ejec)} SKUs, "
+                        f"corte {_gl_txt})")
+                    st.success("✓ Publicado al Gist — URL abajo")
+                    st.rerun()
+                except RuntimeError as _e:
+                    st.error(f"Error al publicar: {_e}")
+                except Exception as _e:
+                    st.error(f"Error inesperado: {_e}")
     with mc2:
-        if _exists_html:
-            st.markdown(f"**Última publicación:** {_pub_html_info}")
+        _last_time = st.session_state.get("_gist_last_time")
+        if _last_time:
+            st.markdown(f"**Última publicación:** {_last_time}")
+        elif _cached_gid:
+            st.info(f"Gist existente detectado: `{_cached_gid}` — "
+                    "re-publica para refrescar el contenido.")
         else:
             st.info("Aún no se ha publicado la vista móvil.")
 
-    # También permitir descarga directa del HTML (backup off-line)
+    # Descarga directa (backup offline) — no requiere token
     st.download_button("⬇ Descargar HTML (offline)", _html_mobile,
         f"stock_ejecutivo_movil_{_stamp}.html", "text/html",
         key="exp_mobile_dl", width='stretch')
 
-    if _exists_html:
-        _public_html_url = _portal_public_url("stock_ejecutivo.html")
-        st.markdown("**URL pública (compartible):**")
-        st.code(_public_html_url, language=None)
+    # Mostrar URL del Gist si tenemos una publicación reciente o cacheada
+    _show_url = st.session_state.get("_gist_last_url")
+    if not _show_url and _cached_gid and _cached_owner:
+        _show_url = (f"https://gist.githubusercontent.com/{_cached_owner}"
+                     f"/{_cached_gid}/raw/{GIST_FILENAME}")
 
-        # Link a WhatsApp: https://wa.me/?text=<url> abre WhatsApp con el
-        # texto pre-llenado. En móvil abre la app; en desktop abre Web.
+    if _show_url:
+        st.markdown("**URL pública (compartible):**")
+        st.code(_show_url, language=None)
+
         import urllib.parse as _up
-        _wa_url = f"https://wa.me/?text={_up.quote(_public_html_url)}"
+        _wa_url = f"https://wa.me/?text={_up.quote(_show_url)}"
         st.link_button("📲 Compartir por WhatsApp", _wa_url,
                         width='stretch', type="primary")
         st.caption(
