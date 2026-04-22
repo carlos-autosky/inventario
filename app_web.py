@@ -1,5 +1,5 @@
 """
-Sistema de Inventario v4.5 — Interfaz Web (Streamlit)
+Sistema de Inventario v4.6 — Interfaz Web (Streamlit)
 """
 # ── Performance instrumentation (lo primero, para medir TODO el rerun) ──
 import time as _ptime
@@ -39,7 +39,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.5"
+APP_VERSION = "v4.6"
 BUILD_TIME  = "21/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -54,11 +54,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.5":
+if st.session_state.get("_app_version") != "v4.6":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.5"
+    st.session_state["_app_version"] = "v4.6"
 
-st.set_page_config(page_title="Inventario v4.5", page_icon="📦",
+st.set_page_config(page_title="Inventario v4.6", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -1067,12 +1067,12 @@ def to_pdf(df, title="Reporte"):
 
 def dl3(df, name, key):
     c1,c2,c3=st.columns(3)
-    with c1: st.download_button("📊 Excel",to_xl(df),f"{name}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key=f"{key}_xl",use_container_width=True)
-    with c2: st.download_button("🌐 HTML",to_html(df,name),f"{name}.html","text/html",key=f"{key}_htm",use_container_width=True)
+    with c1: st.download_button("📊 Excel",to_xl(df),f"{name}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key=f"{key}_xl",width='stretch')
+    with c2: st.download_button("🌐 HTML",to_html(df,name),f"{name}.html","text/html",key=f"{key}_htm",width='stretch')
     with c3:
         pdf=to_pdf(df,name)
-        if pdf: st.download_button("📄 PDF",pdf,f"{name}.pdf","application/pdf",key=f"{key}_pdf",use_container_width=True)
-        else: st.button("📄 PDF",disabled=True,key=f"{key}_pdfx",use_container_width=True)
+        if pdf: st.download_button("📄 PDF",pdf,f"{name}.pdf","application/pdf",key=f"{key}_pdf",width='stretch')
+        else: st.button("📄 PDF",disabled=True,key=f"{key}_pdfx",width='stretch')
 
 def _strict_opts(options, query, format_func=None, keep_selected=None):
     """Filtra opciones por substring estricto (no fuzzy). Streamlit usa fuzzy
@@ -1469,7 +1469,7 @@ with st.sidebar:
 
         c1,c2=st.columns(2)
         with c1:
-            if st.button("🗑 Limpiar",use_container_width=True):
+            if st.button("🗑 Limpiar",width='stretch'):
                 # Mutar en sitio para afectar a todas las sesiones
                 eng.raw_df=None; eng.physical_df=None
                 st.session_state.files_loaded.clear()
@@ -1485,7 +1485,7 @@ with st.sidebar:
                 st.download_button("📥 Exportar",to_xl(eng.raw_df),
                     "consolidado.xlsx",
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,key="exp_cons")
+                    width='stretch',key="exp_cons")
     st.divider()
 
     if eng.raw_df is not None:
@@ -1498,8 +1498,11 @@ with st.sidebar:
         all_skus = list(_excl_map.keys())
 
         _fmt_sku = lambda s: f"{s} — {_excl_map.get(s, '')}"
+        # Inicializar widget state desde filtros persistidos, sin usar `default`
+        # para evitar warning "default + key" de Streamlit.
+        if "es_ms" not in st.session_state:
+            st.session_state["es_ms"] = list(st.session_state.excluded_skus)
         excl_s=st.multiselect("Excluir SKUs", all_skus,
-                               default=list(st.session_state.excluded_skus),
                                key="es_ms",
                                format_func=_fmt_sku,
                                placeholder="Escribe código o nombre…")
@@ -1510,8 +1513,9 @@ with st.sidebar:
             st.session_state["_recalc_pending"] = True
 
         all_wh=eng.get_warehouses()
+        if "ew_ms" not in st.session_state:
+            st.session_state["ew_ms"] = list(st.session_state.excl_wh)
         excl_w=st.multiselect("Excluir Bodegas", all_wh,
-                               default=list(st.session_state.excl_wh),
                                key="ew_ms",
                                placeholder="Escribe para filtrar…")
         _prev_excl_w = set(st.session_state.excl_wh)
@@ -1538,7 +1542,7 @@ with st.sidebar:
         wh_mode=st.selectbox("Bodegas",["Todas","Solo principal","Selección manual"])
         sel_wh=[]
         if wh_mode=="Selección manual": sel_wh=st.multiselect("Bodegas",all_wh)
-        if st.button("▶ Calcular",type="primary",use_container_width=True):
+        if st.button("▶ Calcular",type="primary",width='stretch'):
             with st.spinner("Calculando..."):
                 try:
                     r=eng.analyze(str(cutoff),wh_mode,sel_wh)
@@ -1703,7 +1707,7 @@ def _render_tab_inv():
             stk_only=st.checkbox("Solo con stock",True,key="i_s")
         with fc4:
             st.markdown("")
-            st.button("✔ Aplicar",key="i_apply",use_container_width=True,
+            st.button("✔ Aplicar",key="i_apply",width='stretch',
                       help="Cerrar selector y aplicar filtros")
 
         # Aplicar filtros
@@ -1957,7 +1961,7 @@ def _render_tab_piv():
             # Botón Aplicar: cierra el dropdown y fuerza rerun
             st.button("✔ Aplicar",key="pv_apply",
                       help="Cerrar selector y aplicar filtros",
-                      use_container_width=True)
+                      width='stretch')
 
         if excl_bp: df=df[df["Bodega"]!=PRIMARY_WAREHOUSE]
         if sel_pv:  df=df[df["Código Producto"].isin(sel_pv)]
@@ -2773,7 +2777,7 @@ def _render_tab_cal():
         ("19", "Estado / Alerta",          "evaluación de reglas",            alerta),
     ]
     cal_df = pd.DataFrame(pasos, columns=["#", "Variable", "Fórmula", "Valor"])
-    st.dataframe(cal_df, use_container_width=True, hide_index=True, height=560,
+    st.dataframe(cal_df, width='stretch', hide_index=True, height=560,
                  column_config={
                      "#":        st.column_config.TextColumn("Paso", width="small"),
                      "Variable": st.column_config.TextColumn("Variable"),
@@ -2830,7 +2834,7 @@ def _render_tab_cal():
         to_xl(cal_df),
         f"calculo_{sel_code}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="cal_xl", use_container_width=True)
+        key="cal_xl", width='stretch')
 
 with T_CAL:
     _render_tab_cal()
@@ -3361,7 +3365,7 @@ def _render_toma_fragment():
     _fs_c1, _fs_c2 = st.columns([5, 1])
     with _fs_c2:
         _fs_label = "🔙 Salir modo toma" if st.session_state["toma_fullscreen"] else "🖥 Pantalla completa"
-        if st.button(_fs_label, key="toma_fs_btn", use_container_width=True,
+        if st.button(_fs_label, key="toma_fs_btn", width='stretch',
                      help="Oculta sidebar, banner y otras pestañas para conteo sin distracciones. "
                           "Ideal en celular o tablet."):
             st.session_state["toma_fullscreen"] = not st.session_state["toma_fullscreen"]
@@ -3374,7 +3378,7 @@ def _render_toma_fragment():
                                 all_ubic, key="tu_ubic")
     with col_add:
         st.markdown("")
-        with st.popover("➕ Nueva ubicación", use_container_width=True):
+        with st.popover("➕ Nueva ubicación", width='stretch'):
             _new_ub = st.text_input("Nombre de la nueva ubicación",
                                      key="tu_new_ubic_name",
                                      placeholder="Ej: Bodega Norte")
@@ -3458,7 +3462,7 @@ def _render_toma_fragment():
         with rc2:
             _disabled = (_result is None or _sel_sku_calc is None)
             if st.button("✔ Aplicar al SKU", type="primary",
-                         use_container_width=True,
+                         width='stretch',
                          key=f"calc_apply_{sel_ubic}",
                          disabled=_disabled):
                 # Obtener el índice del SKU en la tabla del editor
@@ -3483,7 +3487,7 @@ def _render_toma_fragment():
 
     edited = st.data_editor(
         table_df,
-        use_container_width=True,
+        width='stretch',
         num_rows="fixed",
         hide_index=True,
         column_config={
@@ -3515,7 +3519,7 @@ def _render_toma_fragment():
     cg1, cg2, cg3 = st.columns([2,1,1])
     with cg1:
         if st.button(f"💾 Guardar toma de «{sel_ubic}»",
-                     type="primary", use_container_width=True,
+                     type="primary", width='stretch',
                      key=f"tu_save_{sel_ubic}"):
             to_save = edited[edited["Nueva"].notna()].copy()
             if to_save.empty:
@@ -3543,7 +3547,7 @@ def _render_toma_fragment():
                            f"Cambia de ubicación arriba para continuar.")
                 _rerun_frag()
     with cg2:
-        if st.button("↺ Descartar edición", use_container_width=True,
+        if st.button("↺ Descartar edición", width='stretch',
                      key=f"tu_reset_{sel_ubic}",
                      help="Limpia los cambios sin guardar en la tabla de arriba."):
             st.session_state.pop(editor_key, None)
@@ -3553,7 +3557,7 @@ def _render_toma_fragment():
         _n_saved = int((rap_df["Ubicación"].astype(str) == str(sel_ubic)).sum()) \
                    if not rap_df.empty else 0
         with st.popover(f"🔥 Borrar toma ({_n_saved})",
-                        use_container_width=True,
+                        width='stretch',
                         disabled=(_n_saved == 0),
                         help=("No hay tomas guardadas en esta ubicación"
                               if _n_saved == 0 else
@@ -3636,7 +3640,7 @@ def _render_resumen_fragment():
         _col_cfg[_c] = st.column_config.NumberColumn(_c, format="%d",
                          help=f"Cantidad contada en {_c}")
 
-    st.dataframe(pivot_display, use_container_width=True, hide_index=True,
+    st.dataframe(pivot_display, width='stretch', hide_index=True,
                  column_config=_col_cfg, height=560)
 
     # Export
@@ -3647,16 +3651,16 @@ def _render_resumen_fragment():
             to_xl(pivot_display),
             "resumen_toma_fisica.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True, key="res_xl")
+            width='stretch', key="res_xl")
     with ec2:
         _pdf = to_pdf(pivot_display, "Resumen Toma Física")
         if _pdf:
             st.download_button("📄 PDF",
                 _pdf, "resumen_toma_fisica.pdf",
                 "application/pdf",
-                use_container_width=True, key="res_pdf")
+                width='stretch', key="res_pdf")
         else:
-            st.button("📄 PDF", disabled=True, use_container_width=True,
+            st.button("📄 PDF", disabled=True, width='stretch',
                      key="res_pdf_disabled")
 
     with st.expander("🧾 Historial completo de movimientos"):
@@ -3665,11 +3669,11 @@ def _render_resumen_fragment():
         for _tc in ["Fecha","Ubicación","Código Producto","Nombre Producto","Observación"]:
             if _tc in _hist.columns:
                 _hist[_tc] = _hist[_tc].fillna("").astype(str)
-        st.dataframe(_hist, use_container_width=True, hide_index=True, height=320)
+        st.dataframe(_hist, width='stretch', hide_index=True, height=320)
         st.download_button("📥 Exportar historial",
             to_xl(_hist), "historial_toma_fisica.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True, key="res_hist_xl")
+            width='stretch', key="res_hist_xl")
 
     # ── Backup completo (todo en un ZIP) ────────────────────────
     with st.expander("💾 Backup completo — todo en un ZIP (recomendado antes de reboot)"):
@@ -3721,14 +3725,14 @@ def _render_resumen_fragment():
                 _zip_bytes,
                 f"backup_autosky_{_fecha_zip}.zip",
                 "application/zip",
-                use_container_width=True, key="res_backup_zip")
+                width='stretch', key="res_backup_zip")
         with cz2:
             _up_zip = st.file_uploader("Restaurar desde ZIP",
                                         type=["zip"], key="res_restore_zip",
                                         label_visibility="collapsed")
             if _up_zip is not None and st.button(
                 "♻ Restaurar desde ZIP", type="primary",
-                use_container_width=True, key="res_restore_btn"
+                width='stretch', key="res_restore_btn"
             ):
                 try:
                     _in = zipfile.ZipFile(io.BytesIO(_up_zip.getvalue()))
@@ -3793,7 +3797,7 @@ def _render_resumen_fragment():
         if _to_del:
             _n_afect = int(rap_df["Ubicación"].astype(str).isin(_to_del).sum())
             with st.popover(f"🔥 Borrar {len(_to_del)} ubicación(es) ({_n_afect} registro(s))",
-                            use_container_width=True):
+                            width='stretch'):
                 st.warning(
                     f"⚠ Se borrarán **{_n_afect}** registro(s) de "
                     f"**{len(_to_del)}** ubicación(es): "
@@ -3817,7 +3821,7 @@ def _render_resumen_fragment():
         st.markdown("##### 🔥 Borrar TODO el historial")
         st.caption(f"Actualmente hay **{len(rap_df):,}** registro(s) en **{len(_all_ubic_saved)}** ubicación(es).")
         with st.popover("🔥 Borrar TODAS las tomas guardadas",
-                        use_container_width=True):
+                        width='stretch'):
             st.error(
                 f"⚠ Esto eliminará **TODOS** los {len(rap_df):,} registro(s) de "
                 f"toma física guardados, de **TODAS** las ubicaciones. "
@@ -3928,9 +3932,9 @@ def _render_importar_fragment():
                            ("➕ Se creará" if u in _to_create_h else "⏭ Se omitirá")}
                 for u, v in _resumen.items()
             ])
-            st.dataframe(_prev_df, use_container_width=True, hide_index=True)
+            st.dataframe(_prev_df, width='stretch', hide_index=True)
 
-            if st.button(_btn_label, type="primary", use_container_width=True,
+            if st.button(_btn_label, type="primary", width='stretch',
                          key="imp_hist_confirm"):
                 # Crear ubicaciones nuevas seleccionadas
                 if _to_create_h:
@@ -4008,7 +4012,7 @@ def _render_importar_fragment():
                 if _to_create:
                     _btn_label = (f"➕ Crear {len(_to_create)} y continuar"
                                    + (f" (omitir {len(_to_skip)})" if _to_skip else ""))
-                if st.button(_btn_label, type="primary", use_container_width=True,
+                if st.button(_btn_label, type="primary", width='stretch',
                              key="imp_create_and_continue"):
                     if _to_create:
                         _custom = _get_custom_ubic()
@@ -4051,7 +4055,7 @@ def _render_importar_fragment():
                     if info["fecha"] is None:
                         _need_date.append(ubic)
                 _prev_df = pd.DataFrame(_prev)
-                st.dataframe(_prev_df, use_container_width=True, hide_index=True)
+                st.dataframe(_prev_df, width='stretch', hide_index=True)
 
                 # Fecha fallback para hojas sin B2
                 _fallback_date = None
@@ -4073,7 +4077,7 @@ def _render_importar_fragment():
                 if st.button(f"✔ Confirmar importación ({_total_items} items en "
                              f"{len(_prev)} ubicación(es))",
                              type="primary", key="imp_confirm",
-                             use_container_width=True):
+                             width='stretch'):
                     rap_state = _get_shared_rapid()
                     rap_df = rap_state["df"]
                     _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -4223,18 +4227,20 @@ def _render_comparacion_fragment():
 
     # Selector de "bodegas contables" (físicamente contables vs consignadas en clientes).
     # Default: solo Bodega Principal. Se persiste en session_state.
+    # Importante: inicializar session_state ANTES del widget; NO pasar `default=`
+    # al widget cuando ya existe la key — Streamlit advierte y puede causar
+    # comportamiento inestable.
     if "_cmp_contables" not in st.session_state:
-        default_contables = [b for b in _all_bod if b == PRIMARY_WAREHOUSE]
-        if not default_contables and _all_bod:
-            default_contables = [_all_bod[0]]
-        st.session_state["_cmp_contables"] = default_contables
+        _default_contables = [b for b in _all_bod if b == PRIMARY_WAREHOUSE]
+        if not _default_contables and _all_bod:
+            _default_contables = [_all_bod[0]]
+        st.session_state["_cmp_contables"] = _default_contables
 
     sc1, sc2 = st.columns([3, 2])
     with sc1:
         contables = st.multiselect(
             "🏢 Bodegas contables (físicamente contables — se comparan contra la toma)",
             _all_bod,
-            default=st.session_state["_cmp_contables"],
             key="_cmp_contables",
             help="Bodegas donde el inventario está en tu posesión y se puede contar. "
                  "El resto se considera 'consignado en clientes' y se reporta aparte.",
@@ -4339,7 +4345,7 @@ def _render_comparacion_fragment():
         _cmp_show[_c] = pd.to_numeric(_cmp_show[_c], errors="coerce").fillna(0).astype(int)
     _cmp_show["Coincide"] = _cmp_show["Coincide"].map({True:"✓", False:"✗"})
 
-    st.dataframe(_cmp_show, use_container_width=True, hide_index=True, height=520,
+    st.dataframe(_cmp_show, width='stretch', hide_index=True, height=520,
                  column_config={
                      "Código Producto": st.column_config.TextColumn("SKU", width="small"),
                      "Nombre Producto": st.column_config.TextColumn("Producto"),
@@ -4372,7 +4378,7 @@ def _render_comparacion_fragment():
                         if c not in ("Código Producto","Nombre Producto")]
             _pv_cl["Σ En clientes"] = _pv_cl[_cl_cols].sum(axis=1)
             _pv_cl = _pv_cl.sort_values("Σ En clientes", ascending=False)
-            st.dataframe(_pv_cl, use_container_width=True, hide_index=True, height=400,
+            st.dataframe(_pv_cl, width='stretch', hide_index=True, height=400,
                          column_config={
                              "Código Producto": st.column_config.TextColumn("SKU", width="small"),
                              "Nombre Producto": st.column_config.TextColumn("Producto"),
@@ -4382,7 +4388,7 @@ def _render_comparacion_fragment():
             st.download_button("📥 Exportar consignado a Excel",
                 to_xl(_pv_cl), "consignado_clientes.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True, key="cons_cl_xl")
+                width='stretch', key="cons_cl_xl")
 
 
 _perf("before_tab_phy")
@@ -4429,7 +4435,7 @@ with st.sidebar:
                     _d[_lbl] = _ms
                 _rows.append(_d)
             _pdf = pd.DataFrame(_rows).iloc[::-1]
-            st.dataframe(_pdf, use_container_width=True, hide_index=True, height=300)
+            st.dataframe(_pdf, width='stretch', hide_index=True, height=300)
             st.caption(f"Archivo: `perf.log` ({_PERF_LOG_PATH})")
             if st.button("🗑 Limpiar historial", key="perf_clear"):
                 _get_perf_history()["runs"] = []
