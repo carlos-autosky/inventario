@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.27"
+APP_VERSION = "v4.17.28"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.27":
+if st.session_state.get("_app_version") != "v4.17.28":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.27"
+    st.session_state["_app_version"] = "v4.17.28"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -670,7 +670,7 @@ def _get_cutoff_for_sales():
 
 def _run_analysis(eng, cutoff, wh_mode, sel_wh):
     """Ejecuta analyze directo. (Versión cacheada tuvo problemas con la
-    serialización del AnalysisResult en Streamlit; revertida en v4.17.27.)"""
+    serialización del AnalysisResult en Streamlit; revertida en v4.17.28.)"""
     return eng.analyze(str(cutoff), wh_mode, sel_wh)
 
 @st.cache_resource
@@ -3604,7 +3604,7 @@ with G_MAN:
 
                 st.markdown("---")
                 st.caption(
-                    "ℹ Esta sección es **manual** en v4.17.27. La sincronización "
+                    "ℹ Esta sección es **manual** en v4.17.28. La sincronización "
                     "automática (al subir archivos / al limpiar / al arrancar "
                     "Cloud) se agrega en versiones posteriores (B2–B6)."
                 )
@@ -6810,21 +6810,41 @@ def _render_tab_imp():
 
         with st.form("imp_new_form", clear_on_submit=True):
             # ── Cabecera del pedido ─────────────────────────────
+            # Cada campo tiene 2 inputs paralelos: selectbox de valores
+            # históricos + text_input libre. Si el text_input está vacío,
+            # manda la selección del dropdown; si escribes texto, tiene
+            # prioridad. Permite tanto reutilizar como crear nuevo.
             ch1, ch2 = st.columns(2)
             with ch1:
-                _f_pedido = st.text_input(
-                    "📦 Pedido / OC",
+                _opts_ped = ["— Nueva OC —"] + _prev_pedidos
+                _ped_sel = st.selectbox(
+                    "📦 Pedido / OC — elegir existente",
+                    _opts_ped,
+                    key="imp_ped_sel",
+                    help="Selecciona una OC existente para agregar líneas "
+                         "a ella. Si la OC es nueva, déjala en '— Nueva OC —' "
+                         "y escribe el número en el campo de abajo.")
+                _ped_new = st.text_input(
+                    "…o escribir OC nueva",
                     placeholder="Ej: PO-2026-042",
-                    help="Número de orden de compra al proveedor. Este valor "
-                         "se aplica a todas las líneas registradas abajo.")
+                    key="imp_ped_new")
+                _f_pedido = _ped_new.strip() if _ped_new.strip() else (
+                    "" if _ped_sel == "— Nueva OC —" else _ped_sel)
             with ch2:
-                _f_proveedor = st.text_input(
-                    "🏭 Proveedor",
-                    placeholder="Nombre del proveedor")
-            if _prev_proveedores:
-                st.caption(f"💡 Proveedores anteriores: "
-                           f"{', '.join(_prev_proveedores[:8])}"
-                           + (" …" if len(_prev_proveedores) > 8 else ""))
+                _opts_prov = ["— Nuevo proveedor —"] + _prev_proveedores
+                _prov_sel = st.selectbox(
+                    "🏭 Proveedor — elegir existente",
+                    _opts_prov,
+                    key="imp_prov_sel",
+                    help="Selecciona un proveedor existente. Si es nuevo, "
+                         "déjalo en '— Nuevo proveedor —' y escribe el nombre "
+                         "en el campo de abajo.")
+                _prov_new = st.text_input(
+                    "…o escribir proveedor nuevo",
+                    placeholder="Nombre del proveedor",
+                    key="imp_prov_new")
+                _f_proveedor = _prov_new.strip() if _prov_new.strip() else (
+                    "" if _prov_sel == "— Nuevo proveedor —" else _prov_sel)
 
             _f_obs_cab = st.text_area(
                 "Observaciones generales del pedido (opcional)",
