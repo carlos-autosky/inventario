@@ -8,7 +8,7 @@
 # importado en el scope local, evitando el bug.
 from dataclasses import dataclass
 import pandas as pd
-from .config import PRIMARY_WAREHOUSE
+from .config import PRIMARY_WAREHOUSE, CONSIGNACION_WAREHOUSES
 from .utils import normalize_token, safe_num, parse_dates
 
 REQUIRED_CANONICAL = [
@@ -101,6 +101,10 @@ class InventoryEngine:
         # Bodegas excluidas globalmente: los movimientos donde la bodega
         # (origen o destino) esté aquí se eliminan ANTES del análisis.
         self.excluded_warehouses: set[str] = set()
+        # Bodegas clasificadas como consignación (compromiso de facturación).
+        # Por default arranca con la lista de config.py; app_web.py la puede
+        # sobrescribir a partir de clasificacion_bodegas.json.
+        self.consignacion_warehouses: set[str] = set(CONSIGNACION_WAREHOUSES)
 
     def _read_excel_flexible(self, path: str) -> pd.DataFrame:
         preview = pd.read_excel(path, header=None)
@@ -340,18 +344,39 @@ class InventoryEngine:
                 "Bodega", "Stock", "Valor Unitario Promedio", "Valor Stock", "Grupo Visual"
             ])
 
+        # ── Costo unitario por SKU: Promedio Móvil Ponderado (PMP) estricto NIIF ──
+        # Σ Valor Total de compras / Σ Cantidad de compras. UN costo por SKU,
+        # independiente de la bodega (la ubicación física no cambia el costo).
+        # Consistente con el cálculo de "Costo Prom." del Kardex y de Compras.
+        if "is_purchase" in df.columns:
+            _comp = df[df["is_purchase"]]
+            if not _comp.empty:
+                _pmp = _comp.groupby("Código Producto").agg(
+                    _qty=("Cantidad", "sum"),
+                    _val=("Valor Total", "sum"),
+                )
+                _pmp["_u"] = _pmp["_val"] / _pmp["_qty"].replace(0, float("nan"))
+                pmp_map = _pmp["_u"].fillna(0).to_dict()
+            else:
+                pmp_map = {}
+        else:
+            pmp_map = {}
+
         out = mov.groupby(
             ["Código Producto", "Nombre Producto", "Categoría Producto", "Bodega"],
             as_index=False
         ).agg(
             Stock=("Cantidad Neta", "sum"),
-            Valor_Unitario_Promedio=("Valor Unitario", "mean")
         )
-        out["Valor Stock"] = out["Stock"] * out["Valor_Unitario_Promedio"]
-        out["Grupo Visual"] = out["Bodega"].apply(
-            lambda x: "Disponible" if x == PRIMARY_WAREHOUSE else "Muestras / Otras Bodegas"
-        )
-        out = out.rename(columns={"Valor_Unitario_Promedio": "Valor Unitario Promedio"})
+        out["Valor Unitario Promedio"] = out["Código Producto"].map(pmp_map).fillna(0.0)
+        out["Valor Stock"] = out["Stock"] * out["Valor Unitario Promedio"]
+
+        _consig = self.consignacion_warehouses
+        def _grupo_visual(b):
+            if b == PRIMARY_WAREHOUSE: return "Disponible"
+            if b in _consig: return "Consignación"
+            return "Muestras / Otras Bodegas"
+        out["Grupo Visual"] = out["Bodega"].apply(_grupo_visual)
 
         # Eliminar filas con stock = 0
         out = out[out["Stock"].abs() > 0.0001]
@@ -379,29 +404,57 @@ class InventoryEngine:
 
         if inventory.empty:
             stock = pd.DataFrame(columns=[
-                "Código Producto", "Stock Disponible", "Stock Muestras", "Stock Total", "Valor Inventario"
+                "Código Producto",
+                "Stock Disponible", "Stock Consignación", "Stock Muestras", "Stock Total",
+                "Valor Disponible", "Valor Consignación", "Valor Muestras", "Valor Inventario",
             ])
         else:
             inv = inventory.copy()
-            inv["TipoStock"] = inv["Bodega"].apply(
-                lambda x: "Stock Disponible" if x == PRIMARY_WAREHOUSE else "Stock Muestras"
-            )
-            pivot = inv.pivot_table(
+            _consig = self.consignacion_warehouses
+
+            def _tipo_stock(b):
+                if b == PRIMARY_WAREHOUSE: return "Stock Disponible"
+                if b in _consig: return "Stock Consignación"
+                return "Stock Muestras"
+            inv["TipoStock"] = inv["Bodega"].apply(_tipo_stock)
+
+            def _tipo_valor(b):
+                if b == PRIMARY_WAREHOUSE: return "Valor Disponible"
+                if b in _consig: return "Valor Consignación"
+                return "Valor Muestras"
+            inv["TipoValor"] = inv["Bodega"].apply(_tipo_valor)
+
+            pivot_stock = inv.pivot_table(
                 index="Código Producto",
                 columns="TipoStock",
                 values="Stock",
                 aggfunc="sum",
                 fill_value=0
             ).reset_index()
-            vals = inv.groupby("Código Producto", as_index=False)["Valor Stock"].sum().rename(
+
+            pivot_valor = inv.pivot_table(
+                index="Código Producto",
+                columns="TipoValor",
+                values="Valor Stock",
+                aggfunc="sum",
+                fill_value=0
+            ).reset_index()
+
+            vals_total = inv.groupby("Código Producto", as_index=False)["Valor Stock"].sum().rename(
                 columns={"Valor Stock": "Valor Inventario"}
             )
-            stock = pivot.merge(vals, on="Código Producto", how="left")
-            if "Stock Disponible" not in stock.columns:
-                stock["Stock Disponible"] = 0.0
-            if "Stock Muestras" not in stock.columns:
-                stock["Stock Muestras"] = 0.0
-            stock["Stock Total"] = stock["Stock Disponible"] + stock["Stock Muestras"]
+
+            stock = pivot_stock.merge(pivot_valor, on="Código Producto", how="left")
+            stock = stock.merge(vals_total, on="Código Producto", how="left")
+
+            for _c in ("Stock Disponible", "Stock Consignación", "Stock Muestras",
+                       "Valor Disponible", "Valor Consignación", "Valor Muestras"):
+                if _c not in stock.columns:
+                    stock[_c] = 0.0
+
+            stock["Stock Total"] = (
+                stock["Stock Disponible"] + stock["Stock Consignación"] + stock["Stock Muestras"]
+            )
 
         out = summary.merge(stock, on="Código Producto", how="left").fillna(0)
         paired_cols = [
@@ -409,7 +462,8 @@ class InventoryEngine:
             "Compras", "Dev_Proveedor", "Baja_Inventario",
             "Ventas", "Dev_Cliente",
             "Muestras_Enviadas", "Muestras_Devueltas",
-            "Stock Disponible", "Stock Muestras", "Stock Total", "Valor Inventario",
+            "Stock Disponible", "Stock Consignación", "Stock Muestras", "Stock Total",
+            "Valor Disponible", "Valor Consignación", "Valor Muestras", "Valor Inventario",
             "Valor_Compras", "Valor_Ventas",
         ]
         existing = [c for c in paired_cols if c in out.columns]
@@ -435,11 +489,17 @@ class InventoryEngine:
         return out.sort_values(["Stock en Cliente", "Cliente"], ascending=[False, True])
 
     def _kpis(self, df: pd.DataFrame, sku: pd.DataFrame) -> dict:
-        stock_total = float(sku["Stock Total"].sum()) if not sku.empty and "Stock Total" in sku.columns else 0.0
-        stock_disp = float(sku["Stock Disponible"].sum()) if not sku.empty and "Stock Disponible" in sku.columns else 0.0
-        stock_muestras = float(sku["Stock Muestras"].sum()) if not sku.empty and "Stock Muestras" in sku.columns else 0.0
-        valor_inv = float(sku["Valor Inventario"].sum()) if not sku.empty and "Valor Inventario" in sku.columns else 0.0
-        ventas = float(df.loc[df["is_sale"], "Valor Total"].sum()) if not df.empty else 0.0
+        def _safe_sum(col):
+            return float(sku[col].sum()) if not sku.empty and col in sku.columns else 0.0
+
+        stock_total    = _safe_sum("Stock Total")
+        stock_disp     = _safe_sum("Stock Disponible")
+        stock_consig   = _safe_sum("Stock Consignación")
+        stock_muestras = _safe_sum("Stock Muestras")
+        valor_inv      = _safe_sum("Valor Inventario")
+        valor_consig   = _safe_sum("Valor Consignación")
+        valor_muestras = _safe_sum("Valor Muestras")
+        ventas  = float(df.loc[df["is_sale"], "Valor Total"].sum()) if not df.empty else 0.0
         compras = float(df.loc[df["is_purchase"], "Valor Total"].sum()) if not df.empty else 0.0
 
         if not df.empty:
@@ -455,8 +515,11 @@ class InventoryEngine:
         return {
             "Stock total": stock_total,
             "Stock disponible": stock_disp,
+            "Stock en consignación": stock_consig,
             "Stock en muestras": stock_muestras,
             "Valor inventario": valor_inv,
+            "Valor consignación": valor_consig,
+            "Valor muestras": valor_muestras,
             "Ventas acumuladas": ventas,
             "Compras acumuladas": compras,
             "Rotación": rot,

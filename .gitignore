@@ -6,14 +6,18 @@ __pycache__/
 *.log
 perf.log
 
-# Datos de negocio (no subir al repo)
+# Datos de negocio (viven en repo-datos privado autosky-inventario-data, NO en este repo del código)
 DetalleMovimientosInventario*.xls
 DetalleMovimientosInventario*.xlsx
 consolidado.xlsx
+ventas_consolidado.xlsx
+importaciones.xlsx
 toma_fisica.xlsx
 toma_fisica_rapida.xlsx
+historial_toma_fisica.xlsx
 ubicaciones_custom.json
 filtros_config.json
+clasificacion_bodegas.json
 # Logo subido por el usuario (el default "Logo AutoSky 500x300.png" sí va al repo)
 logo.png
 
@@ -29,3 +33,13 @@ env/
 .idea/
 .vscode/
 .DS_Store
+.claude/
+
+# Secrets de Streamlit (tokens GitHub, credenciales) — NUNCA subir al repo
+.streamlit/secrets.toml
+
+# Backups locales y archivos de prueba
+*.bak
+*.bak*
+*bak2
+ventas.xlsx

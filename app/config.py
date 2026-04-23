@@ -3,6 +3,12 @@ APP_NAME = "Sistema de Inventario"
 VERSION = "v3.35"
 BUILD_TIMESTAMP = "2026-04-07 00:06:55"
 PRIMARY_WAREHOUSE = "Bodega Principal"
+
+# Bodegas con compromiso de facturación (stock en cliente pero ya es venta segura).
+# Si aparece una bodega nueva que no esté aquí, cae por default como "Muestras".
+CONSIGNACION_WAREHOUSES = [
+    "BODEGA TVENTAS",
+]
 CONFIG_FILENAME = "inventario_v001_config.json"
 
 THEME = {

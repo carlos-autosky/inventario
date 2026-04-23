@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.3"
+APP_VERSION = "v4.17.26"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.3":
+if st.session_state.get("_app_version") != "v4.17.26":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.3"
+    st.session_state["_app_version"] = "v4.17.26"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -135,6 +135,8 @@ def _persist_raw(df):
             df.to_excel(CONSOLIDADO_PATH, index=False, engine="openpyxl")
     except Exception as ex:
         log(f"⚠ No se pudo persistir consolidado: {ex}")
+        return
+    _sync_push_file("consolidado.xlsx", "Update consolidado from AutoSky")
 
 def _persist_physical(df):
     try:
@@ -165,6 +167,8 @@ def _persist_rapid(df):
             df.to_excel(RAPIDA_PATH, index=False, engine="openpyxl")
     except Exception as ex:
         log(f"⚠ No se pudo persistir toma rápida: {ex}")
+        return
+    _sync_push_file("toma_fisica_rapida.xlsx", "Update toma fisica rapida from AutoSky")
 
 # ── Importaciones (pedidos al proveedor en tránsito / por llegar) ──
 IMPORTACIONES_PATH = os.path.join(_BASE_DIR, "importaciones.xlsx")
@@ -201,6 +205,8 @@ def _persist_importaciones(df):
             df.to_excel(IMPORTACIONES_PATH, index=False, engine="openpyxl")
     except Exception as ex:
         log(f"⚠ No se pudo persistir importaciones: {ex}")
+        return
+    _sync_push_file("importaciones.xlsx", "Update importaciones from AutoSky")
 
 def _next_import_id(df):
     """Genera el siguiente ID correlativo IMP-NNNN examinando los IDs existentes."""
@@ -366,6 +372,12 @@ def _persist_logo(png_bytes):
     except Exception as ex:
         log(f"⚠ No se pudo persistir logo: {ex}")
 FILTROS_PATH     = os.path.join(_BASE_DIR, "filtros_config.json")
+CLASIFICACION_BODEGAS_PATH = os.path.join(_BASE_DIR, "clasificacion_bodegas.json")
+# Ruta al pickle de ventas del autosky-dashboard (proyecto hermano en C:\Proyectos\).
+# Solo se usa como FALLBACK en localhost cuando no hay un xlsx consolidado propio.
+VENTAS_PKL_PATH = os.path.join(os.path.dirname(_BASE_DIR), "autosky-dashboard", "data", "combined.pkl")
+# Consolidado propio de ventas (Fase A upload web). Fuente principal cuando existe.
+VENTAS_CONSOLIDADO_PATH = os.path.join(_BASE_DIR, "ventas_consolidado.xlsx")
 
 # Filtros globales compartidos (SKUs y Bodegas excluidas del análisis)
 # Se persisten a disco para que sobrevivan a refresh y sesión nueva.
@@ -394,6 +406,272 @@ def _persist_filtros(excluded_skus, excluded_warehouses):
                 }, f, ensure_ascii=False, indent=2)
     except Exception as ex:
         log(f"⚠ No se pudo persistir filtros: {ex}")
+        return
+    _sync_push_file("filtros_config.json", "Update filtros from AutoSky")
+
+# ── Clasificación de Bodegas (Mantenimiento > Bodegas) ──
+# Persiste un dict {bodega: "Consignación"|"Muestras"|"Excluida permanente"}.
+# "Principal" no se almacena (es fija, PRIMARY_WAREHOUSE). Bodegas no listadas
+# caen por default como "Muestras".
+def _load_clasificacion_bodegas() -> dict:
+    if os.path.exists(CLASIFICACION_BODEGAS_PATH):
+        try:
+            import json
+            with open(CLASIFICACION_BODEGAS_PATH, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception as ex:
+            log(f"⚠ No se pudo leer clasificación de bodegas: {ex}")
+    # Default inicial: TVENTAS en consignación, nada más
+    return {"BODEGA TVENTAS": "Consignación"}
+
+def _save_clasificacion_bodegas(d: dict) -> None:
+    try:
+        import json
+        with _SHARED_WRITE_LOCK:
+            with open(CLASIFICACION_BODEGAS_PATH, "w", encoding="utf-8") as f:
+                json.dump(d, f, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception as ex:
+        log(f"⚠ No se pudo persistir clasificación de bodegas: {ex}")
+        return
+    _sync_push_file("clasificacion_bodegas.json", "Update clasificacion de bodegas from AutoSky")
+
+def _clasif_get_consignacion(clas: dict) -> set:
+    return {b for b, t in clas.items() if t == "Consignación"}
+
+def _clasif_get_excluidas_permanentes(clas: dict) -> set:
+    return {b for b, t in clas.items() if t == "Excluida permanente"}
+
+# ── Ventas — upload/download propio + fallback al pickle del dashboard ──
+# Fuente primaria: ventas_consolidado.xlsx (se sube vía uploader en sidebar).
+# Fallback solo en localhost: combined.pkl del dashboard hermano.
+
+# Columnas canónicas del dataset de ventas (las mismas del pickle del dashboard)
+_VENTAS_CORE_COLS = [
+    "Fecha de Emisión", "Tipo de Documento", "# Documento",
+    "Código de Bien Servicio", "Cantidad", "Nombre de Bien Servicio",
+    "Categoría persona", "Centro de Costo", "Vendedor",
+    "Referencia", "Tipo_venta", "Razón Social", "Descripción",
+    "Costo Venta", "Sub. ", "Sub. 0%", "Descuento", "% Descuento",
+    "IVA", "Neto", "Total",
+]
+
+def _detect_ventas_format(raw_df) -> str:
+    """Detecta si un xlsx es 'contifico' (título en fila 0, header en fila 3)
+    o 'exported' (header en fila 0). Retorna 'contifico' | 'exported' | 'unknown'."""
+    if raw_df.empty:
+        return "unknown"
+    try:
+        c0 = str(raw_df.iloc[0, 0]).strip().upper()
+    except Exception:
+        c0 = ""
+    if "AUTOSKY" in c0 or "ECUADOR" in c0:
+        return "contifico"
+    # Exported: la primera fila ya trae "Fecha de Emisión" como nombre de columna
+    try:
+        header_candidates = [str(x).strip() for x in raw_df.iloc[0].tolist()[:5]]
+    except Exception:
+        header_candidates = []
+    if any("Fecha" in h and "Emisi" in h for h in header_candidates):
+        return "exported"
+    # Búsqueda más laxa en las primeras 5 filas
+    for ridx in range(min(5, len(raw_df))):
+        row_vals = [str(x).strip() for x in raw_df.iloc[ridx].tolist()[:5]]
+        if any("Fecha" in h and "Emisi" in h for h in row_vals):
+            return "contifico" if ridx >= 2 else "exported"
+    return "unknown"
+
+def _parse_ventas_file(file) -> pd.DataFrame:
+    """Lee un xlsx de ventas con auto-detección de formato. Retorna DataFrame
+    canónico listo para merge (con columnas derivadas Año, Mes, MesAnio)."""
+    raw = pd.read_excel(file, header=None)
+    fmt = _detect_ventas_format(raw)
+    if fmt == "contifico":
+        file_pos_reset = file.seek(0) if hasattr(file, "seek") else None
+        df = pd.read_excel(file, header=3)
+    elif fmt == "exported":
+        file_pos_reset = file.seek(0) if hasattr(file, "seek") else None
+        df = pd.read_excel(file, header=0)
+    else:
+        raise ValueError(
+            "Formato de archivo no reconocido. Se esperaba un ventas.xlsx de "
+            "Contifico (con cabecera AUTOSKY ECUADOR arriba) o un export ya "
+            "consolidado (con 'Fecha de Emisión' en la fila 1)."
+        )
+    # Normalizar tipos y fecha
+    df.columns = [str(c) if isinstance(c, str) else c for c in df.columns]
+    if "Fecha de Emisión" in df.columns:
+        df["Fecha de Emisión"] = pd.to_datetime(
+            df["Fecha de Emisión"], dayfirst=True, errors="coerce"
+        )
+    # Filtro defensivo: solo FAC/NCT, descartar totales fantasma
+    if "Tipo de Documento" in df.columns:
+        df = df[df["Tipo de Documento"].isin(["Factura", "Nota de Crédito"])]
+    return df
+
+def _recompute_ventas_derived(df: pd.DataFrame) -> pd.DataFrame:
+    """Recalcula columnas derivadas Año, Mes, MesAnio, _dup_idx sobre el df global.
+    _dup_idx es el cumcount por (#Documento, SKU, Cantidad) para permitir
+    duplicidad legítima (misma factura con 2 líneas del mismo SKU)."""
+    if df.empty:
+        return df
+    if "Fecha de Emisión" in df.columns:
+        fe = pd.to_datetime(df["Fecha de Emisión"], errors="coerce")
+        df = df.copy()
+        df["Año"] = fe.dt.year.astype("Int64")
+        df["Mes"] = fe.dt.month.astype("Int64")
+        df["MesAnio"] = fe.dt.strftime("%Y-%m")
+    # _dup_idx sobre la clave de negocio
+    key_cols = ["# Documento", "Código de Bien Servicio", "Cantidad"]
+    if all(k in df.columns for k in key_cols):
+        df["_dup_idx"] = df.groupby(key_cols).cumcount()
+    return df
+
+def _merge_ventas_df(existing: pd.DataFrame | None, new_df: pd.DataFrame) -> pd.DataFrame:
+    """Merge con política 'por rango de fechas': las filas del consolidado existente
+    que caen dentro del rango del archivo nuevo se REEMPLAZAN por las del nuevo.
+    Esto preserva la duplicidad legítima dentro de una factura (2 líneas idénticas
+    del mismo SKU) y evita duplicados al re-subir el mismo archivo.
+    """
+    if existing is None or existing.empty:
+        return _recompute_ventas_derived(new_df.copy())
+    if "Fecha de Emisión" not in new_df.columns or new_df.empty:
+        # Sin fechas no puedo determinar rango — solo concat
+        combined = pd.concat([existing, new_df], ignore_index=True, sort=False)
+        return _recompute_ventas_derived(combined)
+    fe_new = pd.to_datetime(new_df["Fecha de Emisión"], errors="coerce").dropna()
+    if fe_new.empty:
+        combined = pd.concat([existing, new_df], ignore_index=True, sort=False)
+        return _recompute_ventas_derived(combined)
+    fmin, fmax = fe_new.min(), fe_new.max()
+    ex = existing.copy()
+    if "Fecha de Emisión" in ex.columns:
+        fe_ex = pd.to_datetime(ex["Fecha de Emisión"], errors="coerce")
+        mask_overlap = fe_ex.between(fmin, fmax, inclusive="both")
+        ex = ex[~mask_overlap.fillna(False)]
+    combined = pd.concat([ex, new_df], ignore_index=True, sort=False)
+    return _recompute_ventas_derived(combined)
+
+def _save_ventas_consolidado(df: pd.DataFrame) -> None:
+    try:
+        with _SHARED_WRITE_LOCK:
+            df.to_excel(VENTAS_CONSOLIDADO_PATH, index=False)
+    except Exception as ex:
+        log(f"⚠ No se pudo guardar ventas_consolidado.xlsx: {ex}")
+        raise
+    _sync_push_file("ventas_consolidado.xlsx", "Update ventas consolidado from AutoSky")
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_ventas_xlsx_cached(_mtime: float):
+    try:
+        return pd.read_excel(VENTAS_CONSOLIDADO_PATH)
+    except Exception as ex:
+        log(f"⚠ No se pudo leer ventas_consolidado.xlsx: {ex}")
+        return None
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_ventas_pkl_cached(_mtime: float):
+    import pickle
+    try:
+        with open(VENTAS_PKL_PATH, "rb") as f:
+            return pickle.load(f)
+    except Exception as ex:
+        log(f"⚠ No se pudo leer combined.pkl: {ex}")
+        return None
+
+def _get_ventas_df():
+    """Fuente primaria: xlsx local. Fallback (solo en localhost): pickle hermano."""
+    if os.path.exists(VENTAS_CONSOLIDADO_PATH):
+        try:
+            return _load_ventas_xlsx_cached(os.path.getmtime(VENTAS_CONSOLIDADO_PATH))
+        except Exception:
+            pass
+    if os.path.exists(VENTAS_PKL_PATH):
+        try:
+            return _load_ventas_pkl_cached(os.path.getmtime(VENTAS_PKL_PATH))
+        except Exception:
+            pass
+    return None
+
+def _ventas_status() -> dict:
+    """Resumen del estado de ventas para mostrar en UI. Indica fuente."""
+    source = None
+    path = None
+    if os.path.exists(VENTAS_CONSOLIDADO_PATH):
+        source = "xlsx_local"
+        path = VENTAS_CONSOLIDADO_PATH
+    elif os.path.exists(VENTAS_PKL_PATH):
+        source = "pkl_dashboard"
+        path = VENTAS_PKL_PATH
+    if source is None:
+        return {"ok": False, "reason": "no_file"}
+    df = _get_ventas_df()
+    if df is None or df.empty:
+        return {"ok": False, "reason": "empty", "source": source}
+    fcol = "Fecha de Emisión" if "Fecha de Emisión" in df.columns else None
+    try:
+        fmin = df[fcol].min().strftime("%d/%m/%Y") if fcol else "—"
+        fmax = df[fcol].max().strftime("%d/%m/%Y") if fcol else "—"
+    except Exception:
+        fmin = fmax = "—"
+    return {
+        "ok": True,
+        "rows": len(df),
+        "fmin": fmin,
+        "fmax": fmax,
+        "source": source,
+        "mtime": os.path.getmtime(path),
+    }
+
+def _compute_ventas_kpis(ventas_df, cutoff_date, excluded_skus=None) -> dict:
+    """Calcula KPIs de ventas neta (FAC - NCT) sobre el DataFrame del dashboard,
+    respetando el cutoff del análisis y las exclusiones de SKUs.
+
+    Devuelve: {Ventas, Costo_Ventas, Margen, Margen_Pct, Ventas_con_IVA}.
+    Neto = Sub. + Sub.0% (venta sin IVA). Las NCT ya vienen con signo negativo.
+    """
+    defaults = {"Ventas": 0.0, "Costo_Ventas": 0.0, "Margen": 0.0, "Margen_Pct": 0.0, "Ventas_con_IVA": 0.0}
+    if ventas_df is None or ventas_df.empty:
+        return defaults
+    df = ventas_df
+    # Filtro por cutoff
+    if cutoff_date is not None and "Fecha de Emisión" in df.columns:
+        df = df[df["Fecha de Emisión"] <= pd.Timestamp(cutoff_date)]
+    # Filtro por SKUs excluidos
+    excluded_skus = set(excluded_skus or [])
+    if excluded_skus and "Código de Bien Servicio" in df.columns:
+        df = df[~df["Código de Bien Servicio"].astype(str).isin(excluded_skus)]
+    if df.empty:
+        return defaults
+    neto   = pd.to_numeric(df.get("Neto"), errors="coerce").fillna(0).sum()
+    costo  = pd.to_numeric(df.get("Costo Venta"), errors="coerce").fillna(0).sum()
+    total  = pd.to_numeric(df.get("Total"), errors="coerce").fillna(0).sum()
+    margen = neto - costo
+    pct    = (margen / neto * 100.0) if neto else 0.0
+    return {
+        "Ventas": float(neto),
+        "Costo_Ventas": float(costo),
+        "Margen": float(margen),
+        "Margen_Pct": float(pct),
+        "Ventas_con_IVA": float(total),
+    }
+
+def _get_cutoff_for_sales():
+    """Devuelve el cutoff usado para filtrar ventas: el máximo de los movimientos
+    del último análisis, o la fecha actual si no hay análisis."""
+    r = st.session_state.get("result")
+    if r is not None and hasattr(r, "filtered") and r.filtered is not None and not r.filtered.empty:
+        try:
+            return r.filtered["Fecha"].max()
+        except Exception:
+            pass
+    return pd.Timestamp(date.today())
+
+def _run_analysis(eng, cutoff, wh_mode, sel_wh):
+    """Ejecuta analyze directo. (Versión cacheada tuvo problemas con la
+    serialización del AnalysisResult en Streamlit; revertida en v4.17.26.)"""
+    return eng.analyze(str(cutoff), wh_mode, sel_wh)
 
 @st.cache_resource
 def _get_custom_ubic():
@@ -414,6 +692,8 @@ def _persist_custom_ubic(lst):
                 json.dump({"ubicaciones": list(lst)}, f, ensure_ascii=False, indent=2)
     except Exception as ex:
         log(f"⚠ No se pudo persistir ubicaciones: {ex}")
+        return
+    _sync_push_file("ubicaciones_custom.json", "Update ubicaciones custom from AutoSky")
 
 def _get_all_ubic():
     """Devuelve DEFAULT_LOCATIONS + custom, preservando orden y sin duplicados."""
@@ -643,13 +923,66 @@ def _init():
     # Propagar filtros al engine al primer init (para analyze correcto)
     _e = st.session_state.engine
     _e.excluded_skus        = set(st.session_state.excluded_skus)
-    _e.excluded_warehouses  = set(st.session_state.excl_wh)
+    # Clasificación de bodegas (Mantenimiento > Bodegas): consignación + excluidas permanentes
+    _clas_bodegas = _load_clasificacion_bodegas()
+    _excl_perm = _clasif_get_excluidas_permanentes(_clas_bodegas)
+    _e.consignacion_warehouses = _clasif_get_consignacion(_clas_bodegas)
+    _e.excluded_warehouses     = set(st.session_state.excl_wh) | _excl_perm
     # Si la sesión arranca con datos pre-cargados (el servidor ya los tenía)
     # pero sin cálculo, disparar auto-análisis para que los KPIs aparezcan
     # sin exigir al usuario pulsar "Calcular"
     if (_e.raw_df is not None and st.session_state.result is None):
         st.session_state["_recalc_pending"] = True
+    # Ventas (lectura lazy del combined.pkl del dashboard)
+    st.session_state.setdefault("ventas_df", None)
+
+# ── B2: Auto-pull del repo-datos al primer arranque de la sesión ──
+# Si el filesystem está vacío (caso típico: restart de Streamlit Cloud) pero
+# el repo tiene archivos, los descargamos ANTES del _init() para que el
+# engine cargue los archivos recién descargados.
+# NOTA: este bloque corre antes de la definición de log(), usa print() directo.
+if not st.session_state.get("_autopull_done"):
+    try:
+        from app.github_data_sync import SyncConfig as _SyncCfg_bs, autopull_missing_files as _autopull_bs
+        _bs_cfg = _SyncCfg_bs()
+        if _bs_cfg.is_configured():
+            _bs_r = _autopull_bs(_bs_cfg, _BASE_DIR)
+            if _bs_r.get("pulled"):
+                print(f"[AutoPull] {len(_bs_r['pulled'])} archivo(s) "
+                      f"descargado(s) del repo: {_bs_r['pulled']}", flush=True)
+                st.session_state["_autopull_last"] = _bs_r
+            if _bs_r.get("failed"):
+                print(f"[AutoPull] Fallos: {_bs_r['failed']}", flush=True)
+    except Exception as _bs_ex:
+        print(f"[AutoPull] Error: {_bs_ex}", flush=True)
+    finally:
+        st.session_state["_autopull_done"] = True
+
 _init()
+
+# Si el auto-pull de arranque descargó archivos, notificar una vez al usuario
+_last_pull = st.session_state.get("_autopull_last")
+if _last_pull and _last_pull.get("pulled") and not st.session_state.get("_autopull_toast_shown"):
+    try:
+        st.toast(
+            f"📥 Auto-sync: {len(_last_pull['pulled'])} archivo(s) "
+            f"descargado(s) del repo-datos al arrancar",
+            icon="✅",
+        )
+    except Exception:
+        pass
+    st.session_state["_autopull_toast_shown"] = True
+
+# Cargar ventas con auto-refresh por mtime: si el archivo fuente cambia
+# (upload, limpiar, re-consolidado), se re-lee en el próximo rerun.
+_cur_ventas_src = None
+if os.path.exists(VENTAS_CONSOLIDADO_PATH):
+    _cur_ventas_src = ("xlsx", os.path.getmtime(VENTAS_CONSOLIDADO_PATH))
+elif os.path.exists(VENTAS_PKL_PATH):
+    _cur_ventas_src = ("pkl", os.path.getmtime(VENTAS_PKL_PATH))
+if st.session_state.get("_ventas_df_src") != _cur_ventas_src:
+    st.session_state["ventas_df"] = _get_ventas_df()
+    st.session_state["_ventas_df_src"] = _cur_ventas_src
 eng = st.session_state.engine
 dark = st.session_state.dark_mode
 _perf("session_init")
@@ -1002,6 +1335,97 @@ hr { border-color: #e2e8f0 !important; }
   background: #e0f2fe !important;
   border-color: #0ea5e9 !important;
 }
+
+/* ══ Jerarquía de pestañas: nivel 1 (macro-grupos) vs nivel 2+ (sub) ══ */
+/* BASE — fila 1: fondo marcado, bordes fuertes, letra grande/uppercase/bold */
+div[data-baseweb="tab-list"] {
+  background: linear-gradient(180deg, rgba(14,165,233,0.22), rgba(14,165,233,0.04)) !important;
+  border-bottom: 3px solid rgba(14,165,233,0.55) !important;
+  padding: 6px 8px 0 8px !important;
+  border-radius: 8px 8px 0 0 !important;
+  gap: 4px !important;
+  margin-bottom: 0 !important;
+}
+button[data-baseweb="tab"],
+button[data-baseweb="tab"] * {
+  font-size: 16px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+button[data-baseweb="tab"] {
+  padding: 12px 22px !important;
+  color: #64748b !important;
+}
+button[data-baseweb="tab"][aria-selected="true"],
+button[data-baseweb="tab"][aria-selected="true"] * {
+  color: #075985 !important;
+}
+button[data-baseweb="tab"][aria-selected="true"] {
+  background: rgba(14,165,233,0.25) !important;
+  border-radius: 6px 6px 0 0 !important;
+}
+
+/* NIVEL 2+ — override para tabs anidados: look liviano, sin fondo */
+[role="tabpanel"] div[data-baseweb="tab-list"] {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(148,163,184,0.25) !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 4px !important;
+  gap: 0 !important;
+}
+[role="tabpanel"] button[data-baseweb="tab"],
+[role="tabpanel"] button[data-baseweb="tab"] * {
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: normal !important;
+  text-transform: none !important;
+  color: inherit !important;
+}
+[role="tabpanel"] button[data-baseweb="tab"] {
+  padding: 7px 12px !important;
+}
+/* Activo de fila 2: fondo celeste medio para que se note la selección */
+[role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
+  background: rgba(14,165,233,0.15) !important;
+  border-radius: 6px 6px 0 0 !important;
+  color: #075985 !important;
+}
+[role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
+  color: #075985 !important;
+}
+
+/* NIVEL 3 — tabs doble-anidados (sub-sub-pestañas): aún más pequeño y gris */
+[role="tabpanel"] [role="tabpanel"] div[data-baseweb="tab-list"] {
+  border-bottom: 1px dashed rgba(148,163,184,0.40) !important;
+  margin-bottom: 3px !important;
+}
+[role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"],
+[role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"] * {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: #94a3b8 !important;
+}
+[role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"] {
+  padding: 5px 10px !important;
+}
+/* Activo de fila 3: fondo celeste suave para que la selección sea visible sin robar protagonismo a fila 1 */
+[role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
+  background: rgba(14,165,233,0.10) !important;
+  border-radius: 5px 5px 0 0 !important;
+  color: #0369a1 !important;
+}
+[role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
+  color: #0369a1 !important;
+  font-weight: 600 !important;
+}
+
+/* Acercar fila 2 a fila 1: reducir padding del tabpanel que contiene sub-tabs */
+[role="tabpanel"]:has(div[data-baseweb="tab-list"]) {
+  padding-top: 4px !important;
+}
 '''
 # ── CSS adicional tema oscuro (se inyecta sobre el base claro) ──
 _DARK_CSS = '''
@@ -1216,6 +1640,27 @@ def log(m):
     ts = _now_ec().strftime("%H:%M:%S")
     st.session_state.log.insert(0, f"[{ts}] {m}")
     st.session_state.log = st.session_state.log[:300]
+
+def _sync_push_file(filename: str, commit_msg: str | None = None) -> None:
+    """Push automático de un archivo local al repo-datos (B3).
+    NO bloqueante: si el sync no está configurado, o si falla, solo loguea."""
+    try:
+        from app.github_data_sync import SyncConfig, push_file
+        _c = SyncConfig()
+        if not _c.is_configured():
+            return
+        _lp = os.path.join(_BASE_DIR, filename)
+        if not os.path.exists(_lp):
+            return
+        _msg = commit_msg or f"Update {filename} from AutoSky"
+        _ok, _info = push_file(_c, filename, _lp, _msg)
+        if _ok:
+            log(f"☁ Sync → {filename}: {_info}")
+        else:
+            log(f"⚠ Sync falló → {filename}: {_info}")
+    except Exception as _ex:
+        try: log(f"⚠ Sync error en {filename}: {_ex}")
+        except Exception: pass
 
 def fmt(v, t="n"):
     try:
@@ -2638,6 +3083,135 @@ with st.sidebar:
                     width='stretch',key="exp_cons")
     st.divider()
 
+    # ── Panel Ventas — mismo estilo visual que "Cargar Excel" ──
+    st.markdown("### 💼 Ventas")
+    st.caption("XLSX del sistema contable — acumulativo")
+
+    # Uploader (acepta múltiples archivos, auto-detecta formato)
+    _upl = st.file_uploader(
+        "Subir ventas.xlsx",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key="ventas_upl",
+        label_visibility="collapsed",
+        help=(
+            "Acepta archivos originales de Contifico (3 meses c/u) o un xlsx "
+            "ya consolidado. Auto-detecta el formato. Mantiene duplicidad "
+            "legítima dentro de la factura; re-subir un archivo del mismo "
+            "rango de fechas reemplaza lo existente en ese rango."
+        ),
+    )
+    if _upl:
+        _proc_key = f"ventas_proc_{'|'.join(f.name+str(getattr(f,'size',0)) for f in _upl)}"
+        if not st.session_state.get(_proc_key):
+            _existing = _get_ventas_df() if os.path.exists(VENTAS_CONSOLIDADO_PATH) else None
+            _errors, _parsed_rows, _combined = [], 0, _existing
+            for _f in _upl:
+                try:
+                    _new = _parse_ventas_file(_f)
+                    _parsed_rows += len(_new)
+                    _combined = _merge_ventas_df(_combined, _new)
+                except Exception as _ex:
+                    _errors.append(f"{_f.name}: {_ex}")
+            if _errors:
+                for _e in _errors: st.error(f"❌ {_e}")
+            if _combined is not None and not _combined.empty:
+                try:
+                    _save_ventas_consolidado(_combined)
+                    _load_ventas_xlsx_cached.clear()
+                    # Forzar re-lectura del df en el próximo rerun
+                    st.session_state["ventas_df"] = None
+                    st.session_state["_ventas_df_src"] = None
+                    st.success(
+                        f"✅ {_parsed_rows:,} líneas procesadas · "
+                        f"consolidado ahora: {len(_combined):,} líneas"
+                    )
+                    st.session_state[_proc_key] = True
+                    st.rerun()
+                except Exception as _ex:
+                    st.error(f"❌ No se pudo guardar: {_ex}")
+
+    _vs = _ventas_status()
+    if _vs["ok"]:
+        # Card de "Ventas cargadas" al mismo estilo que "Período cargado"
+        _pc_bg    = "#1e3a5f" if dark else "#f0f9ff"
+        _pc_bdr   = "#2d5a8e" if dark else "#bae6fd"
+        _pc_title = "#7dd3fc" if dark else "#0284c7"
+        _pc_date  = "#f1f5f9" if dark else "#0f172a"
+        _pc_muted = "#94a3b8" if dark else "#64748b"
+        _src_label = (
+            "📁 xlsx local"
+            if _vs.get("source") == "xlsx_local"
+            else "🔗 autosky-dashboard (fallback)"
+        )
+        st.markdown(
+            f"<div style='background:{_pc_bg};border:1px solid {_pc_bdr};"
+            f"border-radius:8px;padding:8px 12px;font-size:11px;margin-bottom:4px'>"
+            f"<b style='color:{_pc_title}'>💼 Ventas cargadas</b><br>"
+            f"<span style='font-size:13px;font-weight:700;color:{_pc_date}'>"
+            f"{_vs['fmin']} → {_vs['fmax']}</span><br>"
+            f"<span style='color:{_pc_muted}'>{_vs['rows']:,} líneas · {_src_label}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Preparar bytes para exportar (xlsx local directo, o al vuelo desde pickle)
+        _xlsx_bytes = None
+        try:
+            if _vs.get("source") == "xlsx_local":
+                with open(VENTAS_CONSOLIDADO_PATH, "rb") as _f:
+                    _xlsx_bytes = _f.read()
+            else:
+                _src_df = _get_ventas_df()
+                _xlsx_bytes = to_xl(_src_df) if _src_df is not None else None
+        except Exception:
+            _xlsx_bytes = None
+
+        # Fila de 2 botones: Limpiar + Exportar (clic directo, sin confirmación)
+        _vc1, _vc2 = st.columns(2)
+        with _vc1:
+            _can_clean = os.path.exists(VENTAS_CONSOLIDADO_PATH)
+            if st.button("🗑 Limpiar", width='stretch',
+                         key="ventas_clean", disabled=not _can_clean,
+                         help=("Borra el consolidado local. No afecta al pickle "
+                               "del dashboard."
+                               if _can_clean else
+                               "No hay consolidado local para borrar.")):
+                try:
+                    if os.path.exists(VENTAS_CONSOLIDADO_PATH):
+                        os.remove(VENTAS_CONSOLIDADO_PATH)
+                    _load_ventas_xlsx_cached.clear()
+                    # Forzar re-lectura del df en el próximo rerun
+                    st.session_state["ventas_df"] = None
+                    st.session_state["_ventas_df_src"] = None
+                    # Limpiar registro de uploads ya procesados
+                    for _k in list(st.session_state.keys()):
+                        if _k.startswith("ventas_proc_"):
+                            del st.session_state[_k]
+                    st.toast("🗑 Consolidado local borrado", icon="✅")
+                    st.rerun()
+                except Exception as _ex:
+                    st.error(f"❌ No se pudo borrar: {_ex}")
+        with _vc2:
+            if _xlsx_bytes:
+                st.download_button(
+                    "📥 Exportar",
+                    _xlsx_bytes,
+                    "ventas_consolidado.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width='stretch',
+                    key="ventas_dl",
+                )
+            else:
+                st.button("📥 Exportar", width='stretch',
+                         disabled=True, key="ventas_dl_x")
+    else:
+        st.info(
+            "No hay ventas cargadas. Sube un archivo ventas.xlsx "
+            "de Contifico o un consolidado ya exportado."
+        )
+    st.divider()
+
     if eng.raw_df is not None:
         st.markdown("### 🚫 Exclusiones globales")
         # Mapa código → nombre para búsqueda predictiva por ambos
@@ -2670,9 +3244,14 @@ with st.sidebar:
                                placeholder="Escribe para filtrar…")
         _prev_excl_w = set(st.session_state.excl_wh)
         st.session_state.excl_wh=set(excl_w)
+        # Clasificación de bodegas (Mantenimiento > Bodegas): mergeamos consignación
+        # y excluidas permanentes con lo que el usuario marcó en el sidebar.
+        _clas_bodegas = _load_clasificacion_bodegas()
+        _excl_perm = _clasif_get_excluidas_permanentes(_clas_bodegas)
+        eng.consignacion_warehouses = _clasif_get_consignacion(_clas_bodegas)
         # Exclusión GLOBAL: descarta movimientos (origen o destino) en esas bodegas.
         # Afecta KPIs, rotación, kardex, compras — todo el pipeline.
-        eng.excluded_warehouses = set(excl_w)
+        eng.excluded_warehouses = set(excl_w) | _excl_perm
         _wh_changed = _prev_excl_w != set(excl_w)
         if _wh_changed:
             st.session_state["_recalc_pending"] = True
@@ -2695,7 +3274,7 @@ with st.sidebar:
         if st.button("▶ Calcular",type="primary",width='stretch'):
             with st.spinner("Calculando..."):
                 try:
-                    r=eng.analyze(str(cutoff),wh_mode,sel_wh)
+                    r=_run_analysis(eng,cutoff,wh_mode,sel_wh)
                     st.session_state.result=r; log(f"OK | {cutoff} | {len(r.filtered):,} mov.")
                     st.success("✓")
                 except Exception as e: st.error(str(e)); log(f"Error: {e}")
@@ -2703,7 +3282,7 @@ with st.sidebar:
         # Auto-recálculo cuando se carga un archivo nuevo
         if st.session_state.pop("_recalc_pending", False) and eng.raw_df is not None:
             try:
-                _ar=eng.analyze(str(cutoff),wh_mode,sel_wh)
+                _ar=_run_analysis(eng,cutoff,wh_mode,sel_wh)
                 st.session_state.result=_ar
                 log(f"Auto-calculado | {cutoff} | {len(_ar.filtered):,} mov.")
             except: pass
@@ -2798,26 +3377,237 @@ if _act_excl_sku or _act_excl_wh:
 # ── KPIs ────────────────────────────────────────────────────────
 if r is not None:
     kpis=r.kpis
+    # Fila 1 — Unidades
     r1="".join([kc("Stock Total",fmt(kpis.get("Stock total",0),"i"),"a"),
                 kc("Disponible",fmt(kpis.get("Stock disponible",0),"i"),"s"),
-                kc("Muestras",fmt(kpis.get("Stock en muestras",0),"i"),"w"),
-                kc("Valor Inv.",f'${fmt(kpis.get("Valor inventario",0))}', "a"),
-                kc("Compras Acum.",f'${fmt(kpis.get("Compras acumuladas",0))}', "d")])
-    r2="".join([kc("Rotación",fmt(kpis.get("Rotación",0),"p")),
-                kc("Días Inv.",f'{kpis.get("Días de inventario",0):.0f} d'),
-                kc("Consumo/día",f'{kpis.get("Consumo promedio",0):.2f} u'),
-                kc("Exactitud",fmt(kpis.get("Exactitud inventario",0),"p"))])
+                kc("Consignación",fmt(kpis.get("Stock en consignación",0),"i"),"p"),
+                kc("Muestras",fmt(kpis.get("Stock en muestras",0),"i"),"w")])
+    # Fila 2 — Valores inventario ($)
+    r2="".join([kc("Valor Consignación",f'${fmt(kpis.get("Valor consignación",0))}',"p"),
+                kc("Valor Muestras",f'${fmt(kpis.get("Valor muestras",0))}',"w"),
+                kc("Valor Inventario",f'${fmt(kpis.get("Valor inventario",0))}',"a")])
+    # Fila 3 — Ventas ($) — solo si hay ventas del dashboard cargadas
+    _vkpi = _compute_ventas_kpis(
+        st.session_state.get("ventas_df"),
+        _get_cutoff_for_sales(),
+        st.session_state.get("excluded_skus"),
+    )
+    r3 = ""
+    if _vkpi["Ventas"] > 0 or _vkpi["Costo_Ventas"] > 0:
+        r3 = "".join([
+            kc("Ventas", f'${fmt(_vkpi["Ventas"])}', "s"),
+            kc("Costo Ventas", f'${fmt(_vkpi["Costo_Ventas"])}', "d"),
+            kc("Margen", f'${fmt(_vkpi["Margen"])}', "a"),
+            kc("Margen %", f'{_vkpi["Margen_Pct"]:.1f}%', "p"),
+        ])
     st.markdown(f'<div class="kpi-row">{r1}</div>',unsafe_allow_html=True)
     st.markdown(f'<div class="kpi-row">{r2}</div>',unsafe_allow_html=True)
+    if r3:
+        st.markdown(f'<div class="kpi-row">{r3}</div>',unsafe_allow_html=True)
     st.markdown("---")
 
 
 _perf("main_kpis_done")
 
-# ── Pestañas ─────────────────────────────────────────────────────
-tabs=st.tabs(["🏪 Inv×Bodega","🔍 Detalle SKU","📊 SKU×Bodega","👥 Muestras",
-              "📈 Período","🔄 Rotación","📐 Cálculos","🧾 Compras","📋 Kardex","🏭 Toma Física","📦 Importación","🔍 Auditoría","📤 Exportar Portal"])
-(T_INV,T_SKU,T_PIV,T_SAM,T_ANA,T_ROT,T_CAL,T_PUR,T_KDX,T_PHY,T_IMP,T_AUD,T_EXP)=tabs
+# ── Pestañas (2 niveles: macro-grupos arriba, sub-pestañas abajo) ──
+G_ABA, G_STK, G_SKU, G_GES, G_MAN = st.tabs([
+    "Abastecimiento", "Stock", "Consulta SKU", "Gestión", "Mantenimiento"
+])
+with G_ABA:
+    T_PUR, T_IMP, T_ROT, T_CAL, T_ANA = st.tabs([
+        "🧾 Compras", "📦 Importación", "🔄 Rotación", "📐 Cálculos", "📈 Período"
+    ])
+with G_STK:
+    T_INV, T_PIV, T_SAM = st.tabs([
+        "🏪 Inv×Bodega", "📊 SKU×Bodega", "👥 Muestras"
+    ])
+with G_SKU:
+    T_SKU, T_KDX = st.tabs([
+        "🔍 Detalle SKU", "📋 Kardex"
+    ])
+with G_GES:
+    T_PHY, T_EXP = st.tabs([
+        "🏭 Toma Física", "📤 Exportar Portal"
+    ])
+with G_MAN:
+    T_AUD, T_BCK, T_BOD = st.tabs([
+        "🔍 Auditoría", "💾 Backups", "🏬 Bodegas"
+    ])
+    with T_BCK:
+        try:
+            from app.github_data_sync import (
+                SyncConfig, SYNC_FILES,
+                list_remote_files, get_remote_file_meta,
+                pull_file, push_file, delete_file,
+            )
+        except Exception as _ex:
+            st.error(f"❌ No se pudo cargar el módulo de sync: {_ex}")
+            SyncConfig = None
+
+        if SyncConfig is not None:
+            _cfg = SyncConfig()
+            _st = _cfg.status_summary()
+            st.markdown("### 💾 Sync con repo-datos")
+            st.caption(
+                "Persistencia remota de archivos de negocio. Los datos subidos "
+                "al repo privado sobreviven redeploys de Streamlit Cloud y "
+                "están disponibles para todos los usuarios."
+            )
+
+            if _st["configured"]:
+                st.success(
+                    f"✅ Conectado · **{_st['repo']}** @ `{_st['branch']}`"
+                )
+            else:
+                _missing = []
+                if not _st["has_token"]: _missing.append("token")
+                if not _st["repo"] or "/" not in _st["repo"]: _missing.append("repo")
+                st.warning(
+                    f"⚠ Sync no configurado — falta: **{', '.join(_missing) or 'config'}**. "
+                    "Ver instrucciones abajo."
+                )
+                with st.expander("🔧 Cómo configurar", expanded=True):
+                    st.markdown(
+                        "**En localhost** (para pruebas locales):\n\n"
+                        "1. Crea el archivo `.streamlit/secrets.toml` en la raíz del proyecto "
+                        "(está en `.gitignore`, nunca se sube al repo).\n"
+                        "2. Agrega:\n"
+                        "```toml\n"
+                        'GITHUB_GIST_TOKEN = "ghp_tu_token_aqui"\n'
+                        "\n"
+                        "# Opcionales (valores por defecto abajo):\n"
+                        '# GITHUB_DATA_REPO = "carlos-autosky/autosky-inventario-data"\n'
+                        '# GITHUB_DATA_BRANCH = "main"\n'
+                        "```\n"
+                        "3. Reinicia Streamlit (Ctrl+C y `streamlit run app_web.py`).\n\n"
+                        "**En Streamlit Cloud**:\n\n"
+                        "1. Dashboard de la app → Settings → Secrets.\n"
+                        "2. Agrega las mismas variables.\n"
+                        "3. Reboot la app.\n\n"
+                        "**Requisitos del token**: Classic Personal Access Token "
+                        "con scope **`repo`** (acceso completo a repos privados), "
+                        "o Fine-grained con permiso **`Contents: Read and write`** "
+                        "al repo de datos."
+                    )
+
+            if _st["configured"]:
+                if st.button("🔄 Refrescar estado", key="sync_refresh"):
+                    st.rerun()
+
+                # Obtener lista de remotos
+                with st.spinner("Consultando repo-datos..."):
+                    _remotes = list_remote_files(_cfg)
+                _remote_by_name = {r["name"]: r for r in _remotes}
+
+                st.markdown("---")
+                st.markdown("#### Archivos sincronizables")
+
+                # Tabla: cabecera
+                _hc = st.columns([3, 2, 3, 1, 1, 1])
+                _hc[0].markdown("**Archivo**")
+                _hc[1].markdown("**Local**")
+                _hc[2].markdown("**Remoto**")
+                _hc[3].markdown("**⬆**")
+                _hc[4].markdown("**⬇**")
+                _hc[5].markdown("**🗑**")
+
+                def _fmt_sz(n):
+                    if n is None: return "—"
+                    return f"{n:,}B" if n < 1024 else (f"{n/1024:.1f}KB" if n < 1024**2 else f"{n/1024**2:.2f}MB")
+
+                for _fn in SYNC_FILES:
+                    _local_path = os.path.join(_BASE_DIR, _fn)
+                    _local_exists = os.path.exists(_local_path)
+                    _local_sz = os.path.getsize(_local_path) if _local_exists else None
+                    _remote = _remote_by_name.get(_fn)
+                    _remote_sz = _remote.get("size") if _remote else None
+
+                    _rc = st.columns([3, 2, 3, 1, 1, 1])
+                    _rc[0].markdown(f"`{_fn}`")
+                    _rc[1].markdown(
+                        f"✓ {_fmt_sz(_local_sz)}" if _local_exists else "—"
+                    )
+                    _rc[2].markdown(
+                        f"✓ {_fmt_sz(_remote_sz)}" if _remote else "—"
+                    )
+                    with _rc[3]:
+                        if st.button("⬆", key=f"push_{_fn}",
+                                     disabled=not _local_exists,
+                                     help="Subir al repo"):
+                            with st.spinner(f"Subiendo {_fn}..."):
+                                _ok, _msg = push_file(_cfg, _fn, _local_path)
+                            (st.success if _ok else st.error)(f"{_fn}: {_msg}")
+                            if _ok: st.rerun()
+                    with _rc[4]:
+                        if st.button("⬇", key=f"pull_{_fn}",
+                                     disabled=_remote is None,
+                                     help="Descargar del repo"):
+                            with st.spinner(f"Descargando {_fn}..."):
+                                _ok, _msg = pull_file(_cfg, _fn, _local_path)
+                            (st.success if _ok else st.error)(f"{_fn}: {_msg}")
+                            if _ok: st.rerun()
+                    with _rc[5]:
+                        if st.button("🗑", key=f"del_{_fn}",
+                                     disabled=_remote is None,
+                                     help="Borrar del repo"):
+                            with st.spinner(f"Borrando {_fn} del repo..."):
+                                _ok, _msg = delete_file(_cfg, _fn)
+                            (st.success if _ok else st.error)(f"{_fn}: {_msg}")
+                            if _ok: st.rerun()
+
+                st.markdown("---")
+                st.markdown("#### Acciones en lote")
+                _bc1, _bc2 = st.columns(2)
+                with _bc1:
+                    if st.button("⬆ Push TODOS los locales",
+                                 key="sync_push_all", width='stretch'):
+                        _ok_count = 0
+                        _fail = []
+                        _bar = st.progress(0.0)
+                        _total = sum(
+                            1 for _f in SYNC_FILES
+                            if os.path.exists(os.path.join(_BASE_DIR, _f))
+                        )
+                        _done = 0
+                        for _fn in SYNC_FILES:
+                            _lp = os.path.join(_BASE_DIR, _fn)
+                            if not os.path.exists(_lp): continue
+                            _ok, _msg = push_file(_cfg, _fn, _lp)
+                            if _ok: _ok_count += 1
+                            else: _fail.append(f"{_fn}: {_msg}")
+                            _done += 1
+                            if _total: _bar.progress(_done / _total)
+                        _bar.empty()
+                        st.success(f"✅ {_ok_count}/{_total} archivos subidos")
+                        for _f in _fail: st.error(_f)
+                        if _ok_count: st.rerun()
+                with _bc2:
+                    if st.button("⬇ Pull TODOS los remotos",
+                                 key="sync_pull_all", width='stretch'):
+                        _ok_count = 0
+                        _fail = []
+                        _bar = st.progress(0.0)
+                        _total = len(_remote_by_name)
+                        _done = 0
+                        for _fn in SYNC_FILES:
+                            if _fn not in _remote_by_name: continue
+                            _lp = os.path.join(_BASE_DIR, _fn)
+                            _ok, _msg = pull_file(_cfg, _fn, _lp)
+                            if _ok: _ok_count += 1
+                            else: _fail.append(f"{_fn}: {_msg}")
+                            _done += 1
+                            if _total: _bar.progress(_done / _total)
+                        _bar.empty()
+                        st.success(f"✅ {_ok_count}/{_total} archivos descargados")
+                        for _f in _fail: st.error(_f)
+                        if _ok_count: st.rerun()
+
+                st.markdown("---")
+                st.caption(
+                    "ℹ Esta sección es **manual** en v4.17.26. La sincronización "
+                    "automática (al subir archivos / al limpiar / al arrancar "
+                    "Cloud) se agrega en versiones posteriores (B2–B6)."
+                )
 _perf("tabs_defined")
 
 excl_s=list(st.session_state.excluded_skus)
@@ -2985,7 +3775,7 @@ def _render_tab_sku():
         _unit_cols = ["Compras","Dev. Proveedor","Ventas","Dev. Cliente",
                       "Baja Inv.",
                       "Muestras Env.","Muestras Dev.",
-                      "Stock Disponible","Stock Muestras","Stock Total",
+                      "Stock Disponible","Stock Consignación","Stock Muestras","Stock Total",
                       "En Tránsito"]
         for _uc in _unit_cols:
             if _uc in df.columns:
@@ -3078,10 +3868,9 @@ def _render_tab_sku():
             "Costo Prom.",               # último costo promedio ponderado
             "Compras","Dev. Proveedor","Baja Inv.",
             "Ventas","Dev. Cliente",
-            "Stock Disponible","Stock Total",
+            "Stock Disponible","Stock Consignación","Stock Muestras","Stock Total",
             "En Tránsito","Fechas Tránsito",
             "✓ Cuadre","Δ vs Stock",
-            "Stock Muestras",
         ]
         mu=[c for c in _u_cols if c in df.columns]
         nu=[c for c in mu if c not in("Código Producto","Nombre Producto")]
@@ -3098,7 +3887,8 @@ def _render_tab_sku():
         st.markdown("##### 💰 Valores Financieros")
         _f_cols = [
             "Código Producto","Nombre Producto",
-            "Valor Compras","Valor Ventas","Valor Inventario",
+            "Valor Compras","Valor Ventas",
+            "Valor Consignación","Valor Muestras","Valor Inventario",
         ]
         mf=[c for c in _f_cols if c in df.columns]
         nf=[c for c in mf if c not in("Código Producto","Nombre Producto")]
@@ -3557,65 +4347,126 @@ with T_SAM:
     _render_tab_sam()
 
 # ══ TAB 5 ANÁLISIS PERÍODO ══════════════════════════════════════
+# Fuente de ventas: ventas_df del autosky-dashboard (combined.pkl).
+# Neto = venta sin IVA · Costo Venta = costo imputado por Contifico al momento de vender.
 @_fragment
 def _render_tab_ana():
-    r = st.session_state.get("result")
-    eng = st.session_state.engine
-    if eng.raw_df is None: st.info("Cargue un archivo.")
-    else:
-        c1,c2,c3=st.columns([2,2,1])
-        df=date.today()-timedelta(days=365)
-        d_f=c1.date_input("Desde",df,format="DD/MM/YYYY",key="an_f")
-        d_t=c2.date_input("Hasta",date.today(),format="DD/MM/YYYY",key="an_t")
-        with c3:
-            st.markdown("")
-            go=st.button("▶ Calcular",type="primary",key="an_btn")
-        if go:
-            if d_f>d_t: st.error("Fecha inicial > final.")
-            else:
-                with st.spinner("Calculando..."):
-                    dfa=eng.raw_df.copy()
-                    if excl_s: dfa=dfa[~dfa["Código Producto"].isin(excl_s)]
-                    dfa=dfa[(dfa["Fecha"]>=pd.Timestamp(d_f))&(dfa["Fecha"]<=pd.Timestamp(d_t))]
-                    ref=dfa["Referencia"].fillna("").astype(str).str.upper()
-                    typ=dfa["Tipo"].fillna("").astype(str).str.upper()
-                    vdf=dfa[(typ=="EGR")&ref.str.startswith("FAC")].copy()
-                    cdf=dfa[(typ=="ING")&ref.str.startswith("FAC")].copy()
-                    cpq,cpv,cpm=defaultdict(float),defaultdict(float),{}
-                    for _,row in cdf.sort_values(["Código Producto","Fecha"]).iterrows():
-                        sku=row["Código Producto"]; qty=float(row["Cantidad"]) or 1
-                        vt=float(row["Valor Total"]); cu=vt/qty if qty>0 and vt>0 else 0
-                        if cu>0:
-                            nq=cpq[sku]+qty; nv=cpv[sku]+vt; cpq[sku]=nq; cpv[sku]=nv; cpm[sku]=nv/nq
-                    st.session_state["an_v"]=vdf; st.session_state["an_cpm"]=cpm
-        if "an_v" in st.session_state and not st.session_state["an_v"].empty:
-            vdf=st.session_state["an_v"]; cpm=st.session_state["an_cpm"]
-            s1,s2=st.tabs(["📊 Top 10 Vendidos","💰 Top 10 Rentabilidad"])
-            with s1:
-                t10v=(vdf.groupby(["Código Producto","Nombre Producto"])
-                      .agg(Unidades=("Cantidad","sum"),Ventas=("Valor Total","sum"))
-                      .reset_index().nlargest(10,"Ventas")
-                      .sort_values("Ventas",ascending=False))
-                if not t10v.empty:
-                    a,b=st.columns([1,1])
-                    with a: st.markdown(tbl(t10v,["Unidades","Ventas"],"av"),unsafe_allow_html=True)
-                    # Gráfica también ordenada de mayor a menor
-                    with b: st.bar_chart(t10v.sort_values("Ventas",ascending=False)
-                                            .set_index("Código Producto")["Ventas"])
-                    dl3(t10v,"top10_vendidos","av")
-            with s2:
-                rows_r=[]
-                for (sku,nom),grp in vdf.groupby(["Código Producto","Nombre Producto"]):
-                    v=float(grp["Valor Total"].sum())
-                    ct=sum(float(rv["Cantidad"])*cpm.get(sku,0) for _,rv in grp.iterrows())
-                    rent=v-ct
-                    rows_r.append({"Código":sku,"Nombre":nom,"Ventas":round(v,2),"Costo":round(ct,2),"Rentabilidad":round(rent,2),"Margen%":round(rent/v*100,2) if v else 0})
-                t10r=pd.DataFrame(rows_r).nlargest(10,"Rentabilidad")
-                if not t10r.empty:
-                    a,b=st.columns([1,1])
-                    with a: st.markdown(tbl(t10r,["Ventas","Costo","Rentabilidad","Margen%"],"ar"),unsafe_allow_html=True)
-                    with b: st.bar_chart(t10r.set_index("Código")["Rentabilidad"])
-                    dl3(t10r,"top10_rentabilidad","ar")
+    _vdf_src = st.session_state.get("ventas_df")
+    if _vdf_src is None or _vdf_src.empty:
+        st.warning(
+            "📊 No hay ventas cargadas. Cárgalas en el **autosky-dashboard** "
+            "para ver este análisis."
+        )
+        return
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    _df_def = date.today() - timedelta(days=365)
+    d_f = c1.date_input("Desde", _df_def, format="DD/MM/YYYY", key="an_f")
+    d_t = c2.date_input("Hasta", date.today(), format="DD/MM/YYYY", key="an_t")
+    with c3:
+        st.markdown("")
+        go = st.button("▶ Calcular", type="primary", key="an_btn")
+
+    if go:
+        if d_f > d_t:
+            st.error("Fecha inicial > final.")
+        else:
+            with st.spinner("Calculando..."):
+                _v = _vdf_src.copy()
+                # Defensa contra filas fantasma del pickle: solo FAC + NCT reales
+                _v = _v[_v["Tipo de Documento"].isin(["Factura", "Nota de Crédito"])]
+                # Rango de fechas
+                _v = _v[(_v["Fecha de Emisión"] >= pd.Timestamp(d_f)) &
+                        (_v["Fecha de Emisión"] <= pd.Timestamp(d_t))]
+                # Exclusiones de SKU del sidebar (consistente con resto del pipeline)
+                if excl_s:
+                    _v = _v[~_v["Código de Bien Servicio"].astype(str).isin(excl_s)]
+                st.session_state["an_vdf"] = _v
+
+    if "an_vdf" in st.session_state and not st.session_state["an_vdf"].empty:
+        _v = st.session_state["an_vdf"]
+
+        # Agregación base por SKU (reutilizada por Top Vendidos y Top Rentabilidad)
+        _by_sku = _v.groupby(
+            ["Código de Bien Servicio", "Nombre de Bien Servicio"],
+            as_index=False,
+        ).agg(
+            Unidades=("Cantidad", "sum"),
+            Ventas=("Neto", "sum"),
+            Costo=("Costo Venta", "sum"),
+        )
+        _by_sku["Margen"]   = _by_sku["Ventas"] - _by_sku["Costo"]
+        _by_sku["Margen %"] = (
+            _by_sku["Margen"] / _by_sku["Ventas"].replace(0, float("nan")) * 100
+        ).fillna(0)
+        _by_sku = _by_sku.rename(columns={
+            "Código de Bien Servicio": "Código",
+            "Nombre de Bien Servicio": "Nombre",
+        })
+        _by_sku["Unidades"]                   = _by_sku["Unidades"].astype(int)
+        _by_sku[["Ventas", "Costo", "Margen"]] = _by_sku[["Ventas", "Costo", "Margen"]].round(2)
+        _by_sku["Margen %"]                   = _by_sku["Margen %"].round(2)
+
+        s1, s2, s3 = st.tabs([
+            "📊 Top 10 Vendidos", "💰 Top 10 Rentabilidad", "📅 Mensual"
+        ])
+
+        with s1:
+            t10v = _by_sku.nlargest(10, "Ventas").sort_values("Ventas", ascending=False)
+            if not t10v.empty:
+                a, b = st.columns([1, 1])
+                _cols_v = ["Código", "Nombre", "Unidades", "Ventas", "Costo"]
+                with a:
+                    st.markdown(
+                        tbl(t10v[_cols_v], ["Unidades", "Ventas", "Costo"], "av"),
+                        unsafe_allow_html=True,
+                    )
+                with b:
+                    st.bar_chart(t10v.set_index("Código")["Ventas"])
+                dl3(t10v[_cols_v], "top10_vendidos", "av")
+
+        with s2:
+            t10r = _by_sku.nlargest(10, "Margen").sort_values("Margen", ascending=False)
+            if not t10r.empty:
+                a, b = st.columns([1, 1])
+                _cols_r = ["Código", "Nombre", "Ventas", "Costo", "Margen", "Margen %"]
+                with a:
+                    st.markdown(
+                        tbl(t10r[_cols_r], ["Ventas", "Costo", "Margen", "Margen %"], "ar"),
+                        unsafe_allow_html=True,
+                    )
+                with b:
+                    st.bar_chart(t10r.set_index("Código")["Margen"])
+                dl3(t10r[_cols_r], "top10_rentabilidad", "ar")
+
+        with s3:
+            # Mensual: uso MesAnio (formato YYYY-MM) que ya viene en el pickle;
+            # ordena alfabéticamente = cronológicamente.
+            _by_month = _v.groupby("MesAnio", as_index=False).agg(
+                Unidades=("Cantidad", "sum"),
+                Ventas=("Neto", "sum"),
+                Costo=("Costo Venta", "sum"),
+            )
+            _by_month["Margen"]   = _by_month["Ventas"] - _by_month["Costo"]
+            _by_month["Margen %"] = (
+                _by_month["Margen"] / _by_month["Ventas"].replace(0, float("nan")) * 100
+            ).fillna(0)
+            _by_month = _by_month.sort_values("MesAnio").rename(columns={"MesAnio": "Mes"})
+            _by_month["Unidades"]                   = _by_month["Unidades"].astype(int)
+            _by_month[["Ventas", "Costo", "Margen"]] = _by_month[["Ventas", "Costo", "Margen"]].round(2)
+            _by_month["Margen %"]                   = _by_month["Margen %"].round(2)
+
+            if not _by_month.empty:
+                a, b = st.columns([1, 1])
+                _cols_m = ["Mes", "Unidades", "Ventas", "Costo", "Margen", "Margen %"]
+                with a:
+                    st.markdown(
+                        tbl(_by_month[_cols_m], ["Unidades", "Ventas", "Costo", "Margen", "Margen %"], "am"),
+                        unsafe_allow_html=True,
+                    )
+                with b:
+                    st.bar_chart(_by_month.set_index("Mes")["Ventas"])
+                dl3(_by_month[_cols_m], "ventas_mensual", "am")
 
 with T_ANA:
     _render_tab_ana()
@@ -4991,19 +5842,22 @@ def _render_resumen_fragment():
     # ── Backup completo (todo en un ZIP) ────────────────────────
     with st.expander("💾 Backup completo — todo en un ZIP (recomendado antes de reboot)"):
         st.caption(
-            "Descarga un ZIP con **historial de toma física + filtros de "
-            "exclusión + ubicaciones custom**. Tras un reboot de Streamlit Cloud "
-            "súbelo aquí para restaurar todo de una vez."
+            "Descarga un ZIP con **TODOS los datos de la app**: historial de "
+            "toma física, filtros, ubicaciones, importaciones, consolidado de "
+            "inventario, ventas y clasificación de bodegas. Tras un reboot de "
+            "Streamlit Cloud súbelo aquí para restaurar todo de una vez."
         )
         import json, zipfile
 
         # Construir ZIP en memoria
         _zip_buf = io.BytesIO()
+        _zip_included = {}
         with zipfile.ZipFile(_zip_buf, "w", zipfile.ZIP_DEFLATED) as _zf:
             # Historial de toma física (si hay datos)
             if not rap_df.empty:
                 _hist_bytes = to_xl(rap_df.sort_values("Fecha", ascending=False))
                 _zf.writestr("toma_fisica_rapida.xlsx", _hist_bytes)
+                _zip_included["hist"] = len(rap_df)
             # Filtros de exclusión
             _f = _get_shared_filtros()
             _zf.writestr("filtros_config.json", json.dumps({
@@ -5019,6 +5873,28 @@ def _render_resumen_fragment():
             _imp_back = _get_shared_importaciones()["df"]
             if not _imp_back.empty:
                 _zf.writestr("importaciones.xlsx", to_xl(_imp_back))
+                _zip_included["imp"] = len(_imp_back)
+            # Consolidado de inventario (B5)
+            if os.path.exists(CONSOLIDADO_PATH):
+                try:
+                    with open(CONSOLIDADO_PATH, "rb") as _fh:
+                        _zf.writestr("consolidado.xlsx", _fh.read())
+                    _zip_included["cons"] = os.path.getsize(CONSOLIDADO_PATH)
+                except Exception: pass
+            # Ventas consolidado (B5)
+            if os.path.exists(VENTAS_CONSOLIDADO_PATH):
+                try:
+                    with open(VENTAS_CONSOLIDADO_PATH, "rb") as _fh:
+                        _zf.writestr("ventas_consolidado.xlsx", _fh.read())
+                    _zip_included["ven"] = os.path.getsize(VENTAS_CONSOLIDADO_PATH)
+                except Exception: pass
+            # Clasificación de bodegas (B5)
+            if os.path.exists(CLASIFICACION_BODEGAS_PATH):
+                try:
+                    with open(CLASIFICACION_BODEGAS_PATH, "rb") as _fh:
+                        _zf.writestr("clasificacion_bodegas.json", _fh.read())
+                    _zip_included["cla"] = os.path.getsize(CLASIFICACION_BODEGAS_PATH)
+                except Exception: pass
         _zip_bytes = _zip_buf.getvalue()
 
         _n_skus_excl = len(_get_shared_filtros()["excluded_skus"])
@@ -5027,14 +5903,25 @@ def _render_resumen_fragment():
         _n_hist      = len(rap_df)
         _n_imp       = len(_get_shared_importaciones()["df"])
 
-        st.markdown(
-            f"**Contenido del backup:**\n\n"
-            f"- 📋 **Historial de toma física**: {_n_hist:,} filas\n"
-            f"- 🚫 **SKUs excluidos**: {_n_skus_excl}\n"
-            f"- 🏪 **Bodegas excluidas**: {_n_wh_excl}\n"
-            f"- 📍 **Ubicaciones custom**: {_n_custom}\n"
-            f"- 📦 **Importaciones**: {_n_imp:,} registros"
-        )
+        def _kb(n):
+            return f"{n/1024:.1f} KB" if n < 1024*1024 else f"{n/(1024*1024):.2f} MB"
+
+        _lines = [
+            f"- 📋 **Historial de toma física**: {_n_hist:,} filas",
+            f"- 🚫 **SKUs excluidos**: {_n_skus_excl}",
+            f"- 🏪 **Bodegas excluidas**: {_n_wh_excl}",
+            f"- 📍 **Ubicaciones custom**: {_n_custom}",
+            f"- 📦 **Importaciones**: {_n_imp:,} registros",
+        ]
+        if "cons" in _zip_included:
+            _lines.append(f"- 🏪 **Consolidado de inventario**: {_kb(_zip_included['cons'])}")
+        if "ven" in _zip_included:
+            _lines.append(f"- 💼 **Ventas consolidado**: {_kb(_zip_included['ven'])}")
+        if "cla" in _zip_included:
+            _lines.append(f"- 🏬 **Clasificación de bodegas**: {_kb(_zip_included['cla'])}")
+        _lines.append(f"- 💾 **Tamaño ZIP total**: {_kb(len(_zip_bytes))}")
+
+        st.markdown(f"**Contenido del backup:**\n\n" + "\n".join(_lines))
 
         _fecha_zip = _now_ec().strftime("%Y%m%d_%H%M")
         cz1, cz2 = st.columns(2)
@@ -5101,6 +5988,50 @@ def _render_resumen_fragment():
                         _imp_st["df"] = _df_imp_in
                         _persist_importaciones(_df_imp_in)
                         _summary.append(f"📦 Importaciones: {len(_df_imp_in):,} registros restaurados")
+
+                    # ── Consolidado de inventario (B5) ──────────────
+                    if "consolidado.xlsx" in _names:
+                        _raw_b = _in.read("consolidado.xlsx")
+                        with open(CONSOLIDADO_PATH, "wb") as _f_out:
+                            _f_out.write(_raw_b)
+                        # Cargar al engine para uso inmediato
+                        try:
+                            eng.load_inventory_file(CONSOLIDADO_PATH)
+                            _n_mov = len(eng.raw_df) if eng.raw_df is not None else 0
+                        except Exception:
+                            _n_mov = 0
+                        # Forzar sync push al repo (no pasó por _persist_raw)
+                        _sync_push_file("consolidado.xlsx",
+                                       "Restore consolidado from backup ZIP")
+                        st.session_state["_recalc_pending"] = True
+                        _summary.append(f"🏪 Consolidado inventario: {_n_mov:,} movimientos")
+
+                    # ── Ventas consolidado (B5) ─────────────────────
+                    if "ventas_consolidado.xlsx" in _names:
+                        _raw_b = _in.read("ventas_consolidado.xlsx")
+                        with open(VENTAS_CONSOLIDADO_PATH, "wb") as _f_out:
+                            _f_out.write(_raw_b)
+                        _load_ventas_xlsx_cached.clear()
+                        # Reset session state para re-lectura
+                        st.session_state["ventas_df"] = None
+                        st.session_state["_ventas_df_src"] = None
+                        _sync_push_file("ventas_consolidado.xlsx",
+                                       "Restore ventas consolidado from backup ZIP")
+                        try:
+                            _n_v = len(pd.read_excel(VENTAS_CONSOLIDADO_PATH))
+                        except Exception:
+                            _n_v = 0
+                        _summary.append(f"💼 Ventas consolidado: {_n_v:,} líneas")
+
+                    # ── Clasificación de bodegas (B5) ───────────────
+                    if "clasificacion_bodegas.json" in _names:
+                        _raw = _in.read("clasificacion_bodegas.json").decode("utf-8")
+                        _data = json.loads(_raw)
+                        if isinstance(_data, dict):
+                            _save_clasificacion_bodegas(_data)
+                            _summary.append(f"🏬 Clasificación bodegas: {len(_data)} clasificadas")
+                        else:
+                            _summary.append("🏬 Clasificación bodegas: formato inválido, omitida")
 
                     if _summary:
                         st.success("✅ Restaurado:\n\n" + "\n".join(f"- {s}" for s in _summary))
@@ -5765,7 +6696,6 @@ def _render_comparacion_fragment():
 _perf("before_tab_phy")
 # ══ TAB 9 TOMA FÍSICA ═══════════════════════════════════════════
 with T_PHY:
-    st.markdown("### 🏭 Toma Física")
     p0,p_res,p1,p2,p3=st.tabs([
         "⚡ Toma", "📊 Resumen",
         "📥 Importar", "📋 Plantilla", "📊 Comparación"
@@ -6905,6 +7835,142 @@ def _render_tab_exp():
 
 with T_EXP:
     _render_tab_exp()
+
+# ══ TAB MANTENIMIENTO > BODEGAS ════════════════════════════════
+with T_BOD:
+    st.markdown("### 🏬 Clasificación de Bodegas")
+    st.caption(
+        "Define cómo se clasifica cada bodega para los KPIs y reportes. "
+        "**Consignación**: stock en cliente con compromiso de facturación. "
+        "**Muestras**: stock en cliente sin compromiso (puede retornar). "
+        "**Excluida permanente**: no se considera en el análisis "
+        "(equivale a marcarla siempre en el sidebar)."
+    )
+
+    _eng_now = st.session_state.get("engine")
+    if _eng_now is None or _eng_now.raw_df is None or _eng_now.raw_df.empty:
+        st.info("Carga un consolidado primero para ver las bodegas disponibles.")
+    else:
+        _orig = set(_eng_now.raw_df["Bodega Origen"].dropna().astype(str).unique())
+        _dest = set(_eng_now.raw_df["Bodega Destino"].dropna().astype(str).unique())
+        _all_bodegas = sorted(_orig | _dest)
+
+        st.markdown(f"**🏪 Principal (fija):** `{PRIMARY_WAREHOUSE}`")
+        st.markdown("")
+
+        _clas = _load_clasificacion_bodegas()
+
+        _rows = []
+        for _b in _all_bodegas:
+            if _b == PRIMARY_WAREHOUSE:
+                continue
+            _rows.append({
+                "Bodega": _b,
+                "Clasificación": _clas.get(_b, "Muestras"),
+            })
+        _df_clas = pd.DataFrame(_rows)
+
+        _edited = st.data_editor(
+            _df_clas,
+            column_config={
+                "Bodega": st.column_config.TextColumn(
+                    "Bodega", disabled=True, width="large"
+                ),
+                "Clasificación": st.column_config.SelectboxColumn(
+                    "Clasificación",
+                    options=["Consignación", "Muestras", "Excluida permanente"],
+                    required=True,
+                    width="medium",
+                ),
+            },
+            hide_index=True,
+            width='stretch',
+            height=500,
+            key="clasif_bodegas_editor",
+        )
+
+        _n_consig = int((_edited["Clasificación"] == "Consignación").sum())
+        _n_muest  = int((_edited["Clasificación"] == "Muestras").sum())
+        _n_excl   = int((_edited["Clasificación"] == "Excluida permanente").sum())
+        st.caption(
+            f"📊 Total: **{len(_edited)}** bodegas · "
+            f"🤝 Consignación: **{_n_consig}** · "
+            f"📦 Muestras: **{_n_muest}** · "
+            f"🚫 Excluidas permanentes: **{_n_excl}**"
+        )
+
+        _col1, _col2 = st.columns([1, 4])
+        with _col1:
+            if st.button("💾 Guardar", type="primary",
+                         key="clasif_bodegas_save", width='stretch'):
+                # Construir el dict de forma DEFENSIVA: partimos del JSON actual
+                # y sobrescribimos con los edits del session_state del data_editor.
+                # Esto evita el bug donde _edited pierde cambios al re-render.
+                _editor_state = st.session_state.get("clasif_bodegas_editor", {})
+                _edits = _editor_state.get("edited_rows", {}) if isinstance(_editor_state, dict) else {}
+
+                # Aplicar edits sobre _df_clas (fuente: JSON + defaults)
+                _final_df = _df_clas.copy()
+                for _ridx, _changes in _edits.items():
+                    try:
+                        _ridx = int(_ridx)
+                    except Exception:
+                        continue
+                    if 0 <= _ridx < len(_final_df):
+                        for _col, _val in _changes.items():
+                            if _col in _final_df.columns:
+                                _final_df.at[_ridx, _col] = _val
+
+                _nuevo = {
+                    str(row["Bodega"]): str(row["Clasificación"])
+                    for _, row in _final_df.iterrows()
+                }
+
+                try:
+                    _save_clasificacion_bodegas(_nuevo)
+                except Exception as _ex:
+                    st.error(f"❌ Error al escribir JSON: {_ex}")
+                else:
+                    # Verificar persistencia releyendo el archivo
+                    _leido = _load_clasificacion_bodegas()
+                    _ok = all(_leido.get(k) == v for k, v in _nuevo.items())
+                    if _ok:
+                        _n_c = sum(1 for v in _nuevo.values() if v == "Consignación")
+                        _n_m = sum(1 for v in _nuevo.values() if v == "Muestras")
+                        _n_x = sum(1 for v in _nuevo.values() if v == "Excluida permanente")
+                        st.success(
+                            f"✅ Guardado: {len(_nuevo)} bodegas "
+                            f"(🤝 {_n_c} consignación · 📦 {_n_m} muestras · 🚫 {_n_x} excluidas). "
+                            "Re-calculando análisis…"
+                        )
+                        st.session_state["_recalc_pending"] = True
+                        st.rerun()
+                    else:
+                        _difs = [k for k, v in _nuevo.items() if _leido.get(k) != v]
+                        st.error(
+                            f"⚠ El JSON se escribió pero no persistió todos los cambios. "
+                            f"Diferencias en: {_difs[:5]}"
+                        )
+        with _col2:
+            st.caption(
+                "Los cambios se aplican en el próximo análisis "
+                "(auto-recálculo al guardar)."
+            )
+
+        # Diagnóstico: ver qué edits tiene el data_editor en session_state
+        with st.expander("🔧 Diagnóstico (edits pendientes)", expanded=False):
+            _es = st.session_state.get("clasif_bodegas_editor", {})
+            _er = _es.get("edited_rows", {}) if isinstance(_es, dict) else {}
+            if _er:
+                st.caption(f"{len(_er)} fila(s) con edits pendientes:")
+                for _ri, _ch in _er.items():
+                    try:
+                        _bod_name = _df_clas.iloc[int(_ri)]["Bodega"]
+                        st.write(f"  • Fila {_ri} (`{_bod_name}`) → {_ch}")
+                    except Exception:
+                        st.write(f"  • Fila {_ri} → {_ch}")
+            else:
+                st.caption("Sin edits pendientes (el editor está en estado inicial del JSON).")
 
 # ── Panel visual de performance en el sidebar ───────────────────
 _perf("end")
