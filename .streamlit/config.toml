@@ -1,7 +1,9 @@
 [theme]
+# Paleta alineada con DashboardCxC — AUTOSKY DESIGN SYSTEM Light v1.3
+# Sky Blue corporativo · fondo blanco · superficie blanca
 base = "light"
-primaryColor = "#0ea5e9"
-backgroundColor = "#f0f9ff"
+primaryColor = "#0078b4"
+backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#ffffff"
 textColor = "#0f172a"
 font = "sans serif"

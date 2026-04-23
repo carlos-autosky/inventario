@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.28"
+APP_VERSION = "v4.17.30"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.28":
+if st.session_state.get("_app_version") != "v4.17.30":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.28"
+    st.session_state["_app_version"] = "v4.17.30"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -670,7 +670,7 @@ def _get_cutoff_for_sales():
 
 def _run_analysis(eng, cutoff, wh_mode, sel_wh):
     """Ejecuta analyze directo. (Versión cacheada tuvo problemas con la
-    serialización del AnalysisResult en Streamlit; revertida en v4.17.28.)"""
+    serialización del AnalysisResult en Streamlit; revertida en v4.17.30.)"""
     return eng.analyze(str(cutoff), wh_mode, sel_wh)
 
 @st.cache_resource
@@ -991,25 +991,28 @@ _perf("session_init")
 if dark:
     BG,PANEL,BORDER,TEXT,MUTED = "#0f172a","#1e293b","#334155","#f1f5f9","#94a3b8"
     TH,TDE,TDO,HOVER = "#0f172a","#1e293b","#162032","#243447"
-    ACC,SUC,WRN,DNG = "#38bdf8","#4ade80","#fbbf24","#f87171"
+    ACC,SUC,WRN,DNG = "#00a0dc","#4ade80","#fbbf24","#f87171"
 else:
     BG,PANEL,BORDER,TEXT,MUTED = "#f8fafc","#ffffff","#e2e8f0","#0f172a","#64748b"
-    TH,TDE,TDO,HOVER = "#f1f5f9","#ffffff","#f8fafc","#e0f2fe"
-    ACC,SUC,WRN,DNG = "#0284c7","#16a34a","#d97706","#dc2626"
+    TH,TDE,TDO,HOVER = "#f1f5f9","#ffffff","#f8fafc","#f0f8ff"
+    ACC,SUC,WRN,DNG = "#0078b4","#16a34a","#d97706","#dc2626"
 
 # ── Autosky Design System CSS ─────────────────────────────
 _CSS = '''
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
 :root {
-  --sky:#0ea5e9; --sky-d:#0284c7; --sky-dd:#0369a1;
-  --sky-l:#e0f2fe; --sky-ll:#f0f9ff;
-  --bg:#f0f9ff; --surface:#ffffff; --surface2:#f8fafc;
+  /* Paleta alineada con DashboardCxC — AUTOSKY DESIGN SYSTEM Light v1.3 */
+  --sky:#0078b4; --sky-d:#003c78; --sky-dd:#00284f;
+  --sky-l:#e0f4fb; --sky-ll:#f0faff;
+  --bg:#ffffff; --surface:#ffffff; --surface2:#f8fafc;
   --border:#e2e8f0; --border2:#cbd5e1;
   --text:#0f172a; --text2:#475569; --text3:#94a3b8;
-  --green:#059669; --green-l:#ecfdf5;
-  --red:#dc2626; --red-l:#fef2f2;
-  --amber:#d97706; --amber-l:#fffbeb;
-  --purple:#7c3aed; --purple-l:#f3e8ff;
+  --green:#059669; --green-l:#ecfdf5; --green-bg:#ecfdf5;
+  --red:#dc2626; --red-l:#fef2f2; --red-bg:#fef2f2;
+  --amber:#d97706; --amber-l:#fffbeb; --amber-bg:#fffbeb;
+  --purple:#7c3aed; --purple-l:#f3e8ff; --purple-bg:#f3e8ff;
+  --shadow:0 1px 3px rgba(0,0,0,.08);
+  --shadow-md:0 4px 12px rgba(0,120,180,.15);
   --radius:10px; --radius-sm:6px;
   --shadow:0 1px 3px rgba(0,0,0,.08);
 }
@@ -1019,11 +1022,32 @@ html,body,[data-testid='stAppViewContainer']{
   font-size:13px; color:var(--text);
 }
 .as-banner{
-  background:linear-gradient(135deg,#0ea5e9,#38bdf8,#7dd3fc);
-  padding:12px 22px; border-radius:10px; margin-bottom:16px;
-  display:flex; align-items:center; justify-content:space-between;
-  box-shadow:0 2px 8px rgba(14,165,233,.35);
+  background:linear-gradient(135deg,#00a0dc,#0078b4,#003c78)!important;
+  padding:14px 20px!important; border-radius:10px; margin-bottom:16px;
+  color:#ffffff!important;
+  box-shadow:0 4px 14px rgba(0,60,120,.25);
 }
+.as-banner,
+.as-banner * { color:#ffffff!important; }
+.as-title{
+  font-size:18px!important; font-weight:700!important; color:#ffffff!important;
+  letter-spacing:.02em; line-height:1.2;
+  margin:0 0 6px 0!important; display:flex; align-items:baseline; gap:10px;
+}
+.as-ver-inline{
+  font-size:12px!important; font-weight:400!important; opacity:.65;
+  font-family:'JetBrains Mono',monospace; color:#ffffff!important;
+}
+.as-subtitle{
+  font-size:13px!important; font-weight:500!important; color:#ffffff!important;
+  opacity:.95; margin:0 0 3px 0!important;
+}
+.as-footer{
+  font-size:11px!important; color:#ffffff!important; opacity:.75;
+  font-family:'JetBrains Mono',monospace;
+  margin:0!important;
+}
+/* Legacy — por si alguna vista antigua del HTML usa estas clases */
 .as-logo{font-size:18px;font-weight:800;color:#fff;letter-spacing:.06em;}
 .as-logo span{font-weight:300;opacity:.85;}
 .as-build{text-align:right;color:rgba(255,255,255,.9);
@@ -1167,8 +1191,11 @@ section[data-testid='stSidebar'] .stCheckbox label{
 .stDataFrame td,.stDataFrame th{color:var(--text)!important;}
 .stButton button[kind='primary']{background:var(--sky)!important;
   border-color:var(--sky)!important;border-radius:var(--radius-sm)!important;
-  font-weight:600!important;}
-.stButton button[kind='primary']:hover{background:var(--sky-d)!important;}
+  font-weight:600!important;color:#ffffff!important;}
+.stButton button[kind='primary'] *{color:#ffffff!important;}
+.stButton button[kind='primary']:hover{background:var(--sky-d)!important;
+  border-color:var(--sky-d)!important;color:#ffffff!important;}
+.stButton button[kind='primary']:hover *{color:#ffffff!important;}
 .stButton button{border-radius:var(--radius-sm)!important;font-weight:600!important;}
 .stAlert{border-radius:var(--radius)!important;}
 .stSelectbox>div>div,.stMultiSelect>div>div{border-radius:var(--radius-sm)!important;}
@@ -1184,7 +1211,7 @@ section[data-testid='stSidebar'] .stCheckbox label{
 [data-testid="stAppViewBlockContainer"],
 [data-testid="block-container"],
 .main, .main .block-container {
-  background-color: #f0f9ff !important;
+  background-color: #f0f8ff !important;
   color: #0f172a !important;
 }
 
@@ -1210,29 +1237,37 @@ p, span, div, label, h1, h2, h3, h4 {
 [data-testid="stFileUploader"],
 [data-testid="stFileUploadDropzone"] {
   background-color: #ffffff !important;
-  border: 2px dashed #bae6fd !important;
+  border: 2px dashed #b3dff2 !important;
   border-radius: 10px !important;
   color: #0f172a !important;
 }
 [data-testid="stFileUploadDropzone"] * { color: #0f172a !important; }
 [data-testid="stFileUploadDropzone"]:hover {
-  border-color: #0ea5e9 !important;
-  background-color: #f0f9ff !important;
+  border-color: #00a0dc !important;
+  background-color: #f0f8ff !important;
 }
 
-/* Upload button dentro del dropzone */
+/* Upload button dentro del dropzone — mismo look que los Calcular primary */
 [data-testid="stFileUploader"] button {
-  background: #0ea5e9 !important;
-  color: #fff !important;
-  border-radius: 6px !important;
-  border: none !important;
+  background: var(--sky) !important;
+  color: #ffffff !important;
+  border-radius: var(--radius-sm) !important;
+  border: 1px solid var(--sky) !important;
+  font-weight: 600 !important;
 }
+[data-testid="stFileUploader"] button * { color: #ffffff !important; }
+[data-testid="stFileUploader"] button:hover {
+  background: var(--sky-d) !important;
+  border-color: var(--sky-d) !important;
+  color: #ffffff !important;
+}
+[data-testid="stFileUploader"] button:hover * { color: #ffffff !important; }
 
 /* Uploaded file item */
 [data-testid="stFileUploaderFile"],
 [data-testid="uploadedFileData"] {
-  background: #f0f9ff !important;
-  border: 1px solid #bae6fd !important;
+  background: #f0f8ff !important;
+  border: 1px solid #b3dff2 !important;
   border-radius: 8px !important;
 }
 [data-testid="stFileUploaderFile"] * { color: #0f172a !important; }
@@ -1257,7 +1292,7 @@ p, span, div, label, h1, h2, h3, h4 {
   background: #ffffff !important;
   color: #0f172a !important;
 }
-[role="option"]:hover { background: #f0f9ff !important; }
+[role="option"]:hover { background: #f0f8ff !important; }
 
 /* Number input */
 [data-testid="stNumberInput"] input {
@@ -1296,7 +1331,7 @@ p, span, div, label, h1, h2, h3, h4 {
 hr { border-color: #e2e8f0 !important; }
 
 /* Spinner */
-[data-testid="stSpinner"] { color: #0ea5e9 !important; }
+[data-testid="stSpinner"] { color: #00a0dc !important; }
 
 /* Caption text */
 .stCaption, [data-testid="stCaptionContainer"] {
@@ -1305,6 +1340,14 @@ hr { border-color: #e2e8f0 !important; }
 
 /* Markdown text */
 .stMarkdown p, .stMarkdown span { color: #0f172a !important; }
+
+/* El banner corporativo va por encima del tema claro (mayor especificidad
+   que .stMarkdown span, que si no gana y pinta el título en negro) */
+.stMarkdown .as-banner, .stMarkdown .as-banner *,
+.as-banner h1.as-title, .as-banner h1.as-title *,
+.as-banner .as-ver-inline, .as-banner .as-subtitle, .as-banner .as-footer {
+  color: #ffffff !important;
+}
 
 /* Tabs area background */
 [data-testid="stHorizontalBlock"],
@@ -1326,21 +1369,21 @@ hr { border-color: #e2e8f0 !important; }
 /* Download button */
 .stDownloadButton button {
   background: #f8fafc !important;
-  color: #0284c7 !important;
-  border: 1px solid #bae6fd !important;
+  color: #0078b4 !important;
+  border: 1px solid #b3dff2 !important;
   border-radius: 6px !important;
   font-weight: 600 !important;
 }
 .stDownloadButton button:hover {
-  background: #e0f2fe !important;
-  border-color: #0ea5e9 !important;
+  background: #f0f8ff !important;
+  border-color: #00a0dc !important;
 }
 
 /* ══ Jerarquía de pestañas: nivel 1 (macro-grupos) vs nivel 2+ (sub) ══ */
 /* BASE — fila 1: fondo marcado, bordes fuertes, letra grande/uppercase/bold */
 div[data-baseweb="tab-list"] {
-  background: linear-gradient(180deg, rgba(14,165,233,0.22), rgba(14,165,233,0.04)) !important;
-  border-bottom: 3px solid rgba(14,165,233,0.55) !important;
+  background: linear-gradient(180deg, rgba(0,160,220,0.22), rgba(0,160,220,0.04)) !important;
+  border-bottom: 3px solid rgba(0,160,220,0.55) !important;
   padding: 6px 8px 0 8px !important;
   border-radius: 8px 8px 0 0 !important;
   gap: 4px !important;
@@ -1359,10 +1402,10 @@ button[data-baseweb="tab"] {
 }
 button[data-baseweb="tab"][aria-selected="true"],
 button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #075985 !important;
+  color: #003c78 !important;
 }
 button[data-baseweb="tab"][aria-selected="true"] {
-  background: rgba(14,165,233,0.25) !important;
+  background: rgba(0,160,220,0.25) !important;
   border-radius: 6px 6px 0 0 !important;
 }
 
@@ -1389,12 +1432,12 @@ button[data-baseweb="tab"][aria-selected="true"] {
 }
 /* Activo de fila 2: fondo celeste medio para que se note la selección */
 [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
-  background: rgba(14,165,233,0.15) !important;
+  background: rgba(0,160,220,0.15) !important;
   border-radius: 6px 6px 0 0 !important;
-  color: #075985 !important;
+  color: #003c78 !important;
 }
 [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #075985 !important;
+  color: #003c78 !important;
 }
 
 /* NIVEL 3 — tabs doble-anidados (sub-sub-pestañas): aún más pequeño y gris */
@@ -1413,12 +1456,12 @@ button[data-baseweb="tab"][aria-selected="true"] {
 }
 /* Activo de fila 3: fondo celeste suave para que la selección sea visible sin robar protagonismo a fila 1 */
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
-  background: rgba(14,165,233,0.10) !important;
+  background: rgba(0,160,220,0.10) !important;
   border-radius: 5px 5px 0 0 !important;
-  color: #0369a1 !important;
+  color: #003c78 !important;
 }
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #0369a1 !important;
+  color: #003c78 !important;
   font-weight: 600 !important;
 }
 
@@ -1481,8 +1524,15 @@ p, span, div, label, h1, h2, h3, h4 { color: #f1f5f9; }
 }
 [data-testid="stFileUploaderFile"] * { color: #f1f5f9 !important; }
 [data-testid="stFileUploader"] button {
-  background: #0ea5e9 !important; color: #fff !important;
+  background: var(--sky) !important; color: #ffffff !important;
+  border: 1px solid var(--sky) !important;
 }
+[data-testid="stFileUploader"] button * { color: #ffffff !important; }
+[data-testid="stFileUploader"] button:hover {
+  background: var(--sky-d) !important;
+  border-color: var(--sky-d) !important;
+}
+[data-testid="stFileUploader"] button:hover * { color: #ffffff !important; }
 [data-testid="stExpander"] {
   background: #1e293b !important; border: 1px solid #334155 !important;
 }
@@ -1491,16 +1541,16 @@ p, span, div, label, h1, h2, h3, h4 { color: #f1f5f9; }
 .stMarkdown p, .stMarkdown span { color: #f1f5f9 !important; }
 hr { border-color: #334155 !important; }
 .stDownloadButton button {
-  background: #1e293b !important; color: #38bdf8 !important;
+  background: #1e293b !important; color: #00a0dc !important;
   border: 1px solid #334155 !important;
 }
 .stDownloadButton button:hover {
-  background: #0f172a !important; border-color: #38bdf8 !important;
+  background: #0f172a !important; border-color: #00a0dc !important;
 }
 .it tbody td { color: #f1f5f9 !important; }
 .it thead th { background: #162032 !important; color: #94a3b8 !important; }
 .it tbody tr:hover td { background: #162032 !important; }
-.it tfoot tr.tot td { background: #1e3a5f !important; color: #38bdf8 !important; }
+.it tfoot tr.tot td { background: #1e3a5f !important; color: #00a0dc !important; }
 '''
 
 _ACTIVE_CSS = _CSS + (_DARK_CSS if dark else "")
@@ -1536,14 +1586,14 @@ _components.html("""<script>
       th.style.userSelect = 'none';
       var handle = doc.createElement('div');
       handle.style.cssText = 'position:absolute;top:0;right:0;bottom:0;width:6px;cursor:col-resize;z-index:10;background:transparent';
-      handle.addEventListener('mouseenter', function() { handle.style.background = 'rgba(14,165,233,.45)'; });
+      handle.addEventListener('mouseenter', function() { handle.style.background = 'rgba(0,160,220,.45)'; });
       handle.addEventListener('mouseleave', function() { if (!handle._drag) handle.style.background = 'transparent'; });
       var startX, startW, drag = false;
       handle.addEventListener('mousedown', function(e) {
         e.stopPropagation(); e.preventDefault();
         drag = true; handle._drag = true;
         startX = e.pageX; startW = th.offsetWidth;
-        handle.style.background   = 'rgba(14,165,233,.7)';
+        handle.style.background   = 'rgba(0,160,220,.7)';
         doc.body.style.cursor     = 'col-resize';
         doc.body.style.userSelect = 'none';
       });
@@ -2286,9 +2336,9 @@ def to_html_mobile(df, fecha_corte_txt):
 <style>
   *{{box-sizing:border-box}}
   body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-       background:#f0f9ff;color:#0f172a;margin:0;padding:0;
+       background:#f0f8ff;color:#0f172a;margin:0;padding:0;
        -webkit-font-smoothing:antialiased}}
-  .header{{background:linear-gradient(135deg,#0ea5e9,#1e3a5f);color:#fff;
+  .header{{background:linear-gradient(135deg,#00a0dc,#0078b4,#003c78);color:#fff;
           padding:22px 16px 18px;text-align:center;
           box-shadow:0 4px 14px rgba(30,58,95,.18)}}
   .header img{{max-height:44px;background:#fff;padding:5px 9px;border-radius:8px}}
@@ -2302,22 +2352,22 @@ def to_html_mobile(df, fecha_corte_txt):
   .summary .card.pos strong{{color:#059669}}
   .summary .card.zero strong{{color:#94a3b8}}
   .summary .card.neg strong{{color:#dc2626}}
-  .summary .card.tot strong{{color:#0ea5e9}}
+  .summary .card.tot strong{{color:#00a0dc}}
   .summary .card.tr strong{{color:#b45309}}
   .summary span{{font-size:11px;color:#64748b;text-transform:uppercase;
                  letter-spacing:.5px;margin-top:4px;display:block}}
-  .search{{position:sticky;top:0;z-index:10;background:#f0f9ff;
+  .search{{position:sticky;top:0;z-index:10;background:#f0f8ff;
            padding:8px 0 6px}}
   .search input{{width:100%;padding:12px 14px;border:1px solid #cbd5e1;
                  border-radius:10px;font-size:15px;outline:none;
                  background:#fff;transition:border-color .15s}}
-  .search input:focus{{border-color:#0ea5e9;
-                       box-shadow:0 0 0 3px rgba(14,165,233,.15)}}
+  .search input:focus{{border-color:#00a0dc;
+                       box-shadow:0 0 0 3px rgba(0,160,220,.15)}}
   .sku{{background:#fff;border-radius:12px;padding:13px 14px;margin-bottom:7px;
         box-shadow:0 1px 3px rgba(0,0,0,.05);display:flex;
         justify-content:space-between;align-items:center;gap:10px}}
   .sku-info{{flex:1;min-width:0}}
-  .sku-code{{font-weight:600;color:#0ea5e9;font-size:14px;letter-spacing:.3px}}
+  .sku-code{{font-weight:600;color:#00a0dc;font-size:14px;letter-spacing:.3px}}
   .sku-name{{color:#475569;font-size:13px;margin-top:2px;
              overflow:hidden;text-overflow:ellipsis;
              display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
@@ -2810,8 +2860,8 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
         for g in groups:
             g_df  = g["df"]
             g_lbl = g["label"]
-            g_bg  = g.get("bg","#e0f2fe")
-            g_col = g.get("col","#0369a1")
+            g_bg  = g.get("bg","#f0f8ff")
+            g_col = g.get("col","#003c78")
             n_sub = {c:0.0 for c in nc}
             # Fila separadora de grupo
             rows += (f'<tr><td colspan="{len(all_cols)}" '
@@ -2843,18 +2893,18 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
                 bdr_r = "border-right:2px solid #94a3b8;" if i==freeze_cols-1 else ("border-right:1px solid #e2e8f0;" if i<freeze_cols else "")
                 if i==0:
                     sc += (f'<td style="position:sticky;{left}z-index:{zidx};'
-                           f'background:#dbeafe;{bdr_r}border-top:1px solid #bfdbfe;'
-                           f'padding:5px 10px;font-size:10px;font-weight:700;color:#1d4ed8">'
+                           f'background:#b3dff2;{bdr_r}border-top:1px solid #bfdbfe;'
+                           f'padding:5px 10px;font-size:10px;font-weight:700;color:#0064a0">'
                            f'{g_lbl} — subtotal</td>')
                 elif c in nc and n_sub[c]!=0:
                     d = f"{int(round(n_sub[c])):,}" if _is_int_col(c) else f"{n_sub[c]:,.2f}"
                     sc += (f'<td style="position:sticky;{left}z-index:{zidx};'
-                           f'background:#dbeafe;{bdr_r}border-top:1px solid #bfdbfe;'
+                           f'background:#b3dff2;{bdr_r}border-top:1px solid #bfdbfe;'
                            f'text-align:right;font-family:monospace;padding:5px 10px;'
-                           f'font-weight:700;color:#1d4ed8">{d}</td>')
+                           f'font-weight:700;color:#0064a0">{d}</td>')
                 else:
                     sc += (f'<td style="position:sticky;{left}z-index:{zidx};'
-                           f'background:#dbeafe;{bdr_r}border-top:1px solid #bfdbfe;'
+                           f'background:#b3dff2;{bdr_r}border-top:1px solid #bfdbfe;'
                            f'padding:5px 10px"></td>')
             rows += f"<tr>{sc}</tr>"
     else:
@@ -2883,8 +2933,8 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
         zidx  = "2" if i < freeze_cols else "0"
         bdr_r = "border-right:2px solid #94a3b8;" if i==freeze_cols-1 else ("border-right:1px solid #e2e8f0;" if i<freeze_cols else "")
         S = (f"position:sticky;{left}z-index:{zidx};{bdr_r}"
-             f"background:#e0f2fe;font-weight:700;padding:7px 10px;"
-             f"border-top:2px solid #7dd3fc;color:#0369a1")
+             f"background:#f0f8ff;font-weight:700;padding:7px 10px;"
+             f"border-top:2px solid #b3dff2;color:#003c78")
         if i==0:
             tfooter += f'<td style="{S}">TOTAL GENERAL</td>'
         elif c in nc and tots[c]!=0:
@@ -2896,13 +2946,13 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
     n_rows = len(df) if not groups else sum(len(g["df"]) for g in groups)
     n_info = title if title else f"{n_rows:,} registros"
 
-    legend_html = f"<div style='font-size:10px;color:#64748b;margin-top:6px;padding:6px 10px;background:#f8fafc;border-radius:6px;border-left:3px solid #0ea5e9'>{legend}</div>" if legend else ""
+    legend_html = f"<div style='font-size:10px;color:#64748b;margin-top:6px;padding:6px 10px;background:#f8fafc;border-radius:6px;border-left:3px solid #00a0dc'>{legend}</div>" if legend else ""
 
     html = (
         "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
         "<style>"
         "*{box-sizing:border-box;margin:0;padding:0}"
-        "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f9ff}"
+        "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f8ff}"
         ".wrap{border:1px solid #e2e8f0;border-radius:8px;overflow:auto;"
         f"max-height:{height}px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08)}}"
         ".zb{display:flex;align-items:center;gap:6px;margin-bottom:6px}"
@@ -2910,9 +2960,9 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
         ".zb .inf{font-size:10px;font-weight:400}"
         ".zb button{background:#fff;border:1px solid #e2e8f0;border-radius:5px;"
         "padding:2px 10px;cursor:pointer;font-weight:700;font-size:13px;color:#475569}"
-        ".zb button:hover{background:#0ea5e9;color:#fff;border-color:#0ea5e9}"
+        ".zb button:hover{background:#00a0dc;color:#fff;border-color:#00a0dc}"
         "table{border-collapse:separate;border-spacing:0;width:max-content}"
-        "tr:hover td{background:#e0f2fe!important}"
+        "tr:hover td{background:#f0f8ff!important}"
         "</style></head><body>"
         f'<div class=\"zb\">'
         "<span>ZOOM</span>"
@@ -2955,12 +3005,12 @@ with st.sidebar:
     ca,cb=st.columns([4,1])
     with ca:
         st.markdown(
-            f'''<div style="font-size:16px;font-weight:800;color:#0ea5e9;
+            f'''<div style="font-size:16px;font-weight:800;color:#00a0dc;
             font-family:Inter,sans-serif;letter-spacing:.04em">
             AUTO<span style="font-weight:300;opacity:.8">SKY</span>
             </div>
             <div style="font-size:10px;font-family:monospace;color:#475569;margin-top:2px">
-            <b style="color:#0ea5e9">{APP_VERSION}</b> &nbsp;|&nbsp; {BUILD_TIME}
+            <b style="color:#00a0dc">{APP_VERSION}</b> &nbsp;|&nbsp; {BUILD_TIME}
             </div>''',
             unsafe_allow_html=True
         )
@@ -3035,9 +3085,9 @@ with st.sidebar:
                 if not _dates.empty:
                     _d1=_dates.min().strftime("%d/%m/%Y")
                     _d2=_dates.max().strftime("%d/%m/%Y")
-                    _pc_bg    = "#1e3a5f" if dark else "#f0f9ff"
-                    _pc_bdr   = "#2d5a8e" if dark else "#bae6fd"
-                    _pc_title = "#7dd3fc" if dark else "#0284c7"
+                    _pc_bg    = "#1e3a5f" if dark else "#f0f8ff"
+                    _pc_bdr   = "#0064a0" if dark else "#b3dff2"
+                    _pc_title = "#b3dff2" if dark else "#0078b4"
                     _pc_date  = "#f1f5f9" if dark else "#0f172a"
                     _pc_muted = "#94a3b8" if dark else "#64748b"
                     st.markdown(
@@ -3134,9 +3184,9 @@ with st.sidebar:
     _vs = _ventas_status()
     if _vs["ok"]:
         # Card de "Ventas cargadas" al mismo estilo que "Período cargado"
-        _pc_bg    = "#1e3a5f" if dark else "#f0f9ff"
-        _pc_bdr   = "#2d5a8e" if dark else "#bae6fd"
-        _pc_title = "#7dd3fc" if dark else "#0284c7"
+        _pc_bg    = "#1e3a5f" if dark else "#f0f8ff"
+        _pc_bdr   = "#0064a0" if dark else "#b3dff2"
+        _pc_title = "#b3dff2" if dark else "#0078b4"
         _pc_date  = "#f1f5f9" if dark else "#0f172a"
         _pc_muted = "#94a3b8" if dark else "#64748b"
         _src_label = (
@@ -3292,9 +3342,9 @@ r=st.session_state.result
 # ── Sin datos ────────────────────────────────────────────────────
 if eng.raw_df is None:
     st.markdown("## 📦 Sistema de Inventario")
-    _card_bg  = "#1e293b" if dark else "#f0f9ff"
-    _card_bdr = "#334155" if dark else "#bae6fd"
-    _card_ver = "#38bdf8" if dark else "#0284c7"
+    _card_bg  = "#1e293b" if dark else "#f0f8ff"
+    _card_bdr = "#334155" if dark else "#b3dff2"
+    _card_ver = "#00a0dc" if dark else "#0078b4"
     _card_sep = "#475569" if dark else "#94a3b8"
     _card_txt = "#94a3b8" if dark else "#475569"
     st.markdown(f"""
@@ -3308,18 +3358,30 @@ if eng.raw_df is None:
     st.info("👈 Cargue uno o más archivos Excel. Puede cargar archivos adicionales y los datos se acumularán.")
     st.stop()
 
-# ── Banner Autosky ───────────────────────────────────────────────
+# ── Banner Autosky (estilo dashboard CxC) ────────────────────────
+# Calcular fecha de corte y N movimientos desde el consolidado cargado.
+_banner_corte_txt = ""
+_banner_n_mov    = 0
+if eng.raw_df is not None and not eng.raw_df.empty and "Fecha" in eng.raw_df.columns:
+    try:
+        _banner_mx = pd.to_datetime(eng.raw_df["Fecha"], errors="coerce").max()
+        if pd.notna(_banner_mx):
+            _banner_corte_txt = _banner_mx.strftime("%d/%m/%Y")
+        _banner_n_mov = len(eng.raw_df)
+    except Exception:
+        pass
+
+_banner_subtitle = (
+    f"Corte: {_banner_corte_txt} &nbsp;·&nbsp; {_banner_n_mov:,} movimientos"
+    if _banner_corte_txt
+    else "Sin datos cargados — sube el consolidado.xlsx"
+)
 st.markdown(f"""<div class="as-banner">
-  <div>
-    <div class="as-logo">AUTO<span>SKY</span>&nbsp;
-      <span style="font-size:12px;font-weight:400;opacity:.85">Sistema de Inventario</span>
-    </div>
-    <div style="font-size:10px;opacity:.8;color:#fff">Gestión · Análisis · Control de Inventario</div>
-  </div>
-  <div class="as-build">
-    <div class="v">{APP_VERSION}</div>
-    <div>{BUILD_TIME}</div>
-  </div>
+  <h1 class="as-title">📦 CONTROL DE INVENTARIO
+    <span class="as-ver-inline">{APP_VERSION}</span>
+  </h1>
+  <div class="as-subtitle">{_banner_subtitle}</div>
+  <div class="as-footer">🕐 {APP_VERSION} · Compilado: {BUILD_TIME}</div>
 </div>""", unsafe_allow_html=True)
 
 # ── Período de datos cargados ───────────────────────────────────
@@ -3329,11 +3391,11 @@ if eng.raw_df is not None and "Fecha" in eng.raw_df.columns:
         if not _all_d.empty:
             _pd1=_all_d.min().strftime("%d/%m/%Y")
             _pd2=_all_d.max().strftime("%d/%m/%Y")
-            _pb_bg  = "#1e3a5f" if dark else "#f0f9ff"
-            _pb_bdr = "#2d5a8e" if dark else "#bae6fd"
-            _pb_lbl = "#7dd3fc" if dark else "#475569"
+            _pb_bg  = "#1e3a5f" if dark else "#f0f8ff"
+            _pb_bdr = "#0064a0" if dark else "#b3dff2"
+            _pb_lbl = "#b3dff2" if dark else "#475569"
             _pb_dt  = "#f1f5f9" if dark else "#0f172a"
-            _pb_arr = "#7dd3fc" if dark else "#94a3b8"
+            _pb_arr = "#b3dff2" if dark else "#94a3b8"
             _pb_mut = "#94a3b8" if dark else "#64748b"
             st.markdown(
                 f"<div class='as-periodo-banner' style='display:inline-flex;align-items:center;gap:16px;"
@@ -3604,7 +3666,7 @@ with G_MAN:
 
                 st.markdown("---")
                 st.caption(
-                    "ℹ Esta sección es **manual** en v4.17.28. La sincronización "
+                    "ℹ Esta sección es **manual** en v4.17.30. La sincronización "
                     "automática (al subir archivos / al limpiar / al arrancar "
                     "Cloud) se agrega en versiones posteriores (B2–B6)."
                 )
@@ -3735,7 +3797,7 @@ def _render_tab_inv():
             _sub = df[df["Bodega"]==_bn][_show_cols].copy() if "Bodega" in df.columns else df[_show_cols].copy()
             if not _sub.empty:
                 _groups.append({"label":_bn, "df":_sub,
-                                 "bg":"#e0f2fe", "col":"#0369a1"})
+                                 "bg":"#f0f8ff", "col":"#003c78"})
         _comp_tbl(df[_show_cols], _nc_show, "inv",
                   freeze_cols=2, height=580,
                   title=f"{len(df):,} registros · {len(_bodegas)} bodega(s)",
@@ -3995,7 +4057,7 @@ def _render_tab_piv():
                 rows += f"<tr>{cells}</tr>"
 
             # ── Fila TOTAL ─────────────────────────────────────────
-            S_TOT = "background:#e0f2fe;font-weight:700;padding:7px 10px;border-top:2px solid #7dd3fc;color:#0369a1"
+            S_TOT = "background:#f0f8ff;font-weight:700;padding:7px 10px;border-top:2px solid #b3dff2;color:#003c78"
             tfooter = ""
             for i,c in enumerate(all_cols):
                 if i == 0:
@@ -4011,7 +4073,7 @@ def _render_tab_piv():
                 "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
                 "<style>"
                 "*{box-sizing:border-box;margin:0;padding:0}"
-                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f9ff}"
+                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f8ff}"
                 ".wrap{border:1px solid #e2e8f0;border-radius:8px;overflow:auto;"
                 "max-height:620px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
                 ".zb{display:flex;align-items:center;gap:6px;margin-bottom:6px}"
@@ -4019,9 +4081,9 @@ def _render_tab_piv():
                 ".zb .inf{font-size:10px;font-weight:400}"
                 ".zb button{background:#fff;border:1px solid #e2e8f0;border-radius:5px;"
                 "padding:2px 10px;cursor:pointer;font-weight:700;font-size:13px;color:#475569}"
-                ".zb button:hover{background:#0ea5e9;color:#fff;border-color:#0ea5e9}"
+                ".zb button:hover{background:#00a0dc;color:#fff;border-color:#00a0dc}"
                 "table{border-collapse:separate;border-spacing:0;width:max-content}"
-                "tr:hover td{background:#e0f2fe!important}"
+                "tr:hover td{background:#f0f8ff!important}"
                 "</style></head><body>"
                 "<div class=\"zb\">"
                 "<span>ZOOM</span>"
@@ -4152,10 +4214,10 @@ def _render_tab_sam():
                     _CW={"Código Producto":90,"Nombre Producto":200,
                          "N° Registro":138,"Mov":90,"Fecha":82,
                          "Descripción":280,"Cantidad":62}
-                    _BOD_BG="#1e3a5f"; _BOD_FG="#7dd3fc"
-                    _SKU_BG="#dbeafe"; _SKU_FG="#1d4ed8"
+                    _BOD_BG="#1e3a5f"; _BOD_FG="#b3dff2"
+                    _SKU_BG="#b3dff2"; _SKU_FG="#0064a0"
                     _TOT_BG="#1e40af"; _TOT_FG="#ffffff"
-                    _DAT_BG=["#ffffff","#f0f9ff"]
+                    _DAT_BG=["#ffffff","#f0f8ff"]
 
                     # Helper <td> — siempre nowrap + overflow ellipsis para textos largos
                     def _td_tra(val, bg, extra_style=""):
@@ -4168,13 +4230,13 @@ def _render_tab_sam():
 
                     # Iconos MOV — flecha verde ↑ Enviada, flecha azul ↓ Devuelta
                     _MOV_ICON={"Enviada":"<span style='color:#059669;font-weight:900'>&#8593;</span> Enviada",
-                               "Devuelta":"<span style='color:#0284c7;font-weight:900'>&#8595;</span> Devuelta",
+                               "Devuelta":"<span style='color:#0078b4;font-weight:900'>&#8595;</span> Devuelta",
                                "Interna":"&#8596; Interna"}
 
                     # Headers con ancho mínimo + position:relative para resize handle
                     TH_BASE=("position:sticky;top:0;z-index:3;background:#1e3a5f;"
-                             "border-bottom:2px solid #0ea5e9;padding:6px 8px;font-size:10px;"
-                             "font-weight:700;text-transform:uppercase;color:#e0f2fe;"
+                             "border-bottom:2px solid #00a0dc;padding:6px 8px;font-size:10px;"
+                             "font-weight:700;text-transform:uppercase;color:#f0f8ff;"
                              "white-space:nowrap;position:relative;overflow:visible")
                     _hdrs_tra="".join(
                         "<th style='"+TH_BASE
@@ -4195,7 +4257,7 @@ def _render_tab_sam():
                         _rows_html+=("<tr><td colspan='"+str(len(_COLS))
                                      +"' style='background:"+_BOD_BG
                                      +";padding:6px 12px;font-size:12px;font-weight:800;color:"+_BOD_FG
-                                     +";border-top:3px solid #0ea5e9;border-bottom:2px solid #0ea5e9'>"
+                                     +";border-top:3px solid #00a0dc;border-bottom:2px solid #00a0dc'>"
                                      +"🏪 "+str(_bod)+"</td></tr>")
                         _bod_env=0; _bod_dev=0
 
@@ -4241,8 +4303,8 @@ def _render_tab_sam():
                             _sku_neto=_sku_env-_sku_dev
                             _bod_env+=_sku_env; _bod_dev+=_sku_dev
                             _neto_col="#065f46" if _sku_neto>0 else ("#b91c1c" if _sku_neto<0 else "#374151")
-                            _ss=("background:"+_SKU_BG+";border-top:1px solid #93c5fd;"
-                                 "border-bottom:1px solid #93c5fd;padding:5px 8px;"
+                            _ss=("background:"+_SKU_BG+";border-top:1px solid #b3dff2;"
+                                 "border-bottom:1px solid #b3dff2;padding:5px 8px;"
                                  "font-size:11px;font-weight:700;color:"+_SKU_FG+";")
                             _s_cells=(
                                 "<td style='"+_ss+"'>"+_sku+"</td>"
@@ -4278,8 +4340,8 @@ def _render_tab_sam():
                     # Gran total
                     _grand_neto=_grand_env-_grand_dev
                     _gneto_col="#065f46" if _grand_neto>0 else ("#b91c1c" if _grand_neto<0 else "#374151")
-                    _gs=("background:#0ea5e9;color:#fff;font-weight:800;"
-                         "border-top:3px solid #0284c7;padding:7px 8px;")
+                    _gs=("background:#00a0dc;color:#fff;font-weight:800;"
+                         "border-top:3px solid #0078b4;padding:7px 8px;")
                     _gt_tra=(
                         "<td style='"+_gs+"'>TOTAL GENERAL</td>"
                         +"<td style='"+_gs+"'></td>"
@@ -4294,13 +4356,13 @@ def _render_tab_sam():
                     _html_tra=(
                         "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
                         "<style>*{box-sizing:border-box;margin:0;padding:0}"
-                        "body{font-family:Inter,sans-serif;background:#f0f9ff;padding:2px}"
+                        "body{font-family:Inter,sans-serif;background:#f0f8ff;padding:2px}"
                         ".zb{display:flex;align-items:center;gap:6px;margin-bottom:6px}"
                         ".zb span{font-size:11px;font-weight:700;color:#94a3b8}"
                         ".zb .i{font-size:10px;font-weight:400}"
                         ".zb button{background:#fff;border:1px solid #e2e8f0;border-radius:5px;"
                         "padding:2px 10px;cursor:pointer;font-weight:700;font-size:13px;color:#475569}"
-                        ".zb button:hover{background:#0ea5e9;color:#fff}"
+                        ".zb button:hover{background:#00a0dc;color:#fff}"
                         ".wt{overflow:auto;max-height:620px;border:1px solid #e2e8f0;"
                         "border-radius:8px;background:#fff}"
                         "table{border-collapse:separate;border-spacing:0;"
@@ -4936,16 +4998,16 @@ def _render_tab_pur():
             # ── Tabla compras con color alternado por grupo SKU ──
             _nc_pur=["Cant.","V.Total","V.Unit","Costo Prom."]
             # Paleta de 2 fondos alternados por SKU
-            _pal=["#f0f9ff","#ffffff"]   # celeste muy suave / blanco
-            _sub_bg="#dbeafe"            # azul pastel para filas SUBTOTAL
+            _pal=["#f0f8ff","#ffffff"]   # celeste muy suave / blanco
+            _sub_bg="#b3dff2"            # azul pastel para filas SUBTOTAL
 
             def _pur_table(df, nc, uid):
                 if df is None or df.empty:
                     return "<p>Sin datos</p>"
                 uid_s = uid.replace("-", "_")
                 all_cols = list(df.columns)
-                PAL = ["#f0f9ff", "#ffffff"]
-                SUB_BG = "#dbeafe"
+                PAL = ["#f0f8ff", "#ffffff"]
+                SUB_BG = "#b3dff2"
                 TH_BASE = (
                     "position:sticky;top:0;z-index:3;background:#f1f5f9;"
                     "border-bottom:2px solid #cbd5e1;padding:7px 10px;font-size:10px;"
@@ -4983,7 +5045,7 @@ def _render_tab_pur():
                                 pass
                         fw  = "font-weight:700;" if is_sub else ""
                         aln = "text-align:right;font-family:monospace;" if c in nc else ""
-                        bdr = "border-top:1px solid #93c5fd;" if is_sub else "border-bottom:1px solid #f1f5f9;"
+                        bdr = "border-top:1px solid #b3dff2;" if is_sub else "border-bottom:1px solid #f1f5f9;"
                         cells += (
                             "<td style='background:" + bg + ";padding:6px 10px;font-size:12px;"
                             + aln + fw + bdr + "'>" + disp + "</td>"
@@ -4997,8 +5059,8 @@ def _render_tab_pur():
 
                 first = all_cols[0] if all_cols else ""
                 TOT = (
-                    "background:#e0f2fe;font-weight:800;padding:7px 10px;"
-                    "border-top:2px solid #7dd3fc;color:#0369a1"
+                    "background:#f0f8ff;font-weight:800;padding:7px 10px;"
+                    "border-top:2px solid #b3dff2;color:#003c78"
                 )
                 tcells = "".join(
                     (
@@ -5038,7 +5100,7 @@ def _render_tab_pur():
                 "<link rel='preconnect' href='https://fonts.googleapis.com'>"
                 "<style>"
                 "*{box-sizing:border-box;margin:0;padding:0}"
-                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f9ff;padding:2px}"
+                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f8ff;padding:2px}"
                 ".tc{overflow:auto;max-height:560px;border:1px solid #e2e8f0;"
                 "border-radius:8px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08);"
                 "position:relative}"
@@ -5052,8 +5114,8 @@ def _render_tab_pur():
                 ".zb span{font-size:11px;font-weight:700;color:#94a3b8}"
                 ".zb button{background:#fff;border:1px solid #e2e8f0;border-radius:5px;"
                 "padding:2px 10px;cursor:pointer;font-weight:700;font-size:13px;color:#475569}"
-                ".zb button:hover{background:#0ea5e9;color:#fff}"
-                "tr:hover td{background:#e0f2fe!important}"
+                ".zb button:hover{background:#00a0dc;color:#fff}"
+                "tr:hover td{background:#f0f8ff!important}"
                 "</style></head><body>"
                 + _pur_html
                 + "<script>"
@@ -5181,7 +5243,7 @@ def _render_tab_kdx():
         if "kdx" in st.session_state and not st.session_state["kdx"].empty:
             dk=st.session_state["kdx"]
             CK2={
-                "INICIO":     ("#dbeafe","#1e40af"),
+                "INICIO":     ("#b3dff2","#1e40af"),
                 "INGRESO":    ("#d1fae5","#065f46"),
                 "ING DEV.CLI":("#fef9c3","#854d0e"),
                 "EGRESO":     ("#f3f4f6","#374151"),
@@ -5194,8 +5256,8 @@ def _render_tab_kdx():
 
             TH_CSS = (
                 "position:sticky;top:0;z-index:3;background:#1e3a5f;"
-                "border-bottom:2px solid #0ea5e9;padding:7px 10px;font-size:10px;"
-                "font-weight:700;text-transform:uppercase;color:#e0f2fe;white-space:nowrap"
+                "border-bottom:2px solid #00a0dc;padding:7px 10px;font-size:10px;"
+                "font-weight:700;text-transform:uppercase;color:#f0f8ff;white-space:nowrap"
             )
             hdrs_parts = []
             for c in all_cols:
@@ -5216,9 +5278,9 @@ def _render_tab_kdx():
                     rows_parts.append(
                         "<tr><td colspan='" + str(len(all_cols)) + "' "
                         "style='background:#1e3a5f;padding:5px 12px;"
-                        "font-size:11px;font-weight:700;color:#7dd3fc;"
-                        "letter-spacing:.06em;border-top:3px solid #0ea5e9;"
-                        "border-bottom:2px solid #0ea5e9'>"
+                        "font-size:11px;font-weight:700;color:#b3dff2;"
+                        "letter-spacing:.06em;border-top:3px solid #00a0dc;"
+                        "border-bottom:2px solid #00a0dc'>"
                         "&#9644;&#9644; " + sku + " &#9644;&#9644;"
                         "</td></tr>"
                     )
@@ -5264,14 +5326,14 @@ def _render_tab_kdx():
                 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
                 "<style>"
                 "*{box-sizing:border-box;margin:0;padding:0}"
-                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f9ff;padding:2px}"
+                "body{font-family:Inter,Segoe UI,sans-serif;background:#f0f8ff;padding:2px}"
                 ".leg{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}"
                 ".zb{display:flex;align-items:center;gap:6px;margin-bottom:6px}"
                 ".zb span{font-size:11px;font-weight:700;color:#94a3b8}"
                 ".zb .inf{font-size:10px;font-weight:400}"
                 ".zb button{background:#fff;border:1px solid #e2e8f0;border-radius:5px;"
                 "padding:2px 10px;cursor:pointer;font-weight:700;font-size:13px;color:#475569}"
-                ".zb button:hover{background:#0ea5e9;color:#fff}"
+                ".zb button:hover{background:#00a0dc;color:#fff}"
                 ".wrap{overflow:auto;max-height:580px;border:1px solid #e2e8f0;"
                 "border-radius:8px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.08)}"
                 "table{border-collapse:separate;border-spacing:0;"
@@ -6570,8 +6632,8 @@ def _render_comparacion_fragment():
 
     # Banner explicativo
     st.markdown(
-        f"<div style='background:#e0f2fe;border:1px solid #7dd3fc;border-radius:8px;"
-        f"padding:8px 14px;margin:8px 0;font-size:12px;color:#075985;line-height:1.5'>"
+        f"<div style='background:#f0f8ff;border:1px solid #b3dff2;border-radius:8px;"
+        f"padding:8px 14px;margin:8px 0;font-size:12px;color:#003c78;line-height:1.5'>"
         f"<b>📘 Lógica de la comparación</b><br>"
         f"• <b>Físico</b> = suma de la última cantidad contada por SKU en todas las "
         f"ubicaciones de la toma.<br>"
