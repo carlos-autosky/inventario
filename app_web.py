@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.26"
+APP_VERSION = "v4.17.27"
 BUILD_TIME  = "22/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.26":
+if st.session_state.get("_app_version") != "v4.17.27":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.26"
+    st.session_state["_app_version"] = "v4.17.27"
 
 st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -670,7 +670,7 @@ def _get_cutoff_for_sales():
 
 def _run_analysis(eng, cutoff, wh_mode, sel_wh):
     """Ejecuta analyze directo. (Versión cacheada tuvo problemas con la
-    serialización del AnalysisResult en Streamlit; revertida en v4.17.26.)"""
+    serialización del AnalysisResult en Streamlit; revertida en v4.17.27.)"""
     return eng.analyze(str(cutoff), wh_mode, sel_wh)
 
 @st.cache_resource
@@ -3604,7 +3604,7 @@ with G_MAN:
 
                 st.markdown("---")
                 st.caption(
-                    "ℹ Esta sección es **manual** en v4.17.26. La sincronización "
+                    "ℹ Esta sección es **manual** en v4.17.27. La sincronización "
                     "automática (al subir archivos / al limpiar / al arrancar "
                     "Cloud) se agrega en versiones posteriores (B2–B6)."
                 )
@@ -4078,9 +4078,12 @@ def _render_tab_sam():
                 st.warning("Sin muestras.")
             else:
                 c1,c2=st.columns([3,1])
-                flt=c1.text_input("🔍 Cliente","",key="sa_f",placeholder="Nombre...")
+                _cli_opts=sorted(df["Cliente"].dropna().astype(str).unique().tolist())
+                flt_sel=c1.multiselect("🔍 Cliente",_cli_opts,key="sa_f_sel",
+                                        placeholder="Escribe para filtrar clientes…")
                 pend=c2.checkbox("Solo pendientes",True,key="sa_p")
-                df=pfilt(df,flt,cols=("Cliente",))
+                if flt_sel:
+                    df=df[df["Cliente"].astype(str).isin(flt_sel)]
                 if pend and "Stock en Cliente" in df.columns:
                     df=df[df["Stock en Cliente"]>0]
                 m1,m2,m3=st.columns(3)
@@ -4121,18 +4124,22 @@ def _render_tab_sam():
 
                     # Filtros
                     _fc1,_fc2,_fc3=st.columns([3,3,2])
-                    _bods_tra=["Todas"]+sorted(_tra["Bodega"].dropna().unique().tolist())
-                    _flt_cli =_fc1.text_input("🔍 Bodega/Cliente","",key="tra_f",placeholder="Nombre...")
-                    _flt_sku =_fc2.text_input("🔍 SKU","",key="tra_s",placeholder="Código o nombre...")
+                    _bods_tra_opts=sorted(_tra["Bodega"].dropna().astype(str).unique().tolist())
+                    _sku_pairs=sorted({(str(rr["Código Producto"]),str(rr["Nombre Producto"]))
+                                       for _,rr in _tra[["Código Producto","Nombre Producto"]].dropna().iterrows()})
+                    _sku_tra_opts=[f"{c} — {n}" for c,n in _sku_pairs]
+                    _flt_cli =_fc1.multiselect("🔍 Bodega/Cliente",_bods_tra_opts,key="tra_f_sel",
+                                                placeholder="Escribe para filtrar bodegas/clientes…")
+                    _flt_sku =_fc2.multiselect("🔍 SKU",_sku_tra_opts,key="tra_s_sel",
+                                                placeholder="Escribe código o nombre…")
                     _mov_flt =_fc3.selectbox("Movimiento",["Todos","📤 Enviada","📥 Devuelta","↔ Interna"],key="tra_m")
 
                     _t=_tra.copy()
                     if _flt_cli:
-                        _t=_t[_t["Bodega"].fillna("").str.upper().str.contains(_flt_cli.upper())]
+                        _t=_t[_t["Bodega"].astype(str).isin(_flt_cli)]
                     if _flt_sku:
-                        _mask=(_t["Código Producto"].fillna("").str.upper().str.contains(_flt_sku.upper()) |
-                               _t["Nombre Producto"].fillna("").str.upper().str.contains(_flt_sku.upper()))
-                        _t=_t[_mask]
+                        _codes_tra_sel={s.split(" — ")[0] for s in _flt_sku}
+                        _t=_t[_t["Código Producto"].astype(str).isin(_codes_tra_sel)]
                     if _mov_flt!="Todos":
                         _t=_t[_t["Mov"]==_mov_flt]
 
@@ -4485,7 +4492,12 @@ def _render_tab_rot():
         cob=c4.number_input("🎯 Cobertura(d)",1,730,60,key="rcob",
                             help="Días totales de cobertura deseados. Sug.Cob. "
                                  "= Consumo_diario × Cobertura − Stock_actual.")
-        flt_r=c5.text_input("🔍 Filtrar SKU","",key="rf",placeholder="Código o nombre...")
+        # Opciones de SKU para filtro predictivo (del consolidado completo)
+        _rot_base=eng.raw_df[["Código Producto","Nombre Producto"]].dropna().drop_duplicates() if eng.raw_df is not None else pd.DataFrame()
+        _rot_sku_opts=sorted([f"{c} — {n}" for c,n in zip(
+            _rot_base["Código Producto"].astype(str), _rot_base["Nombre Producto"].astype(str))])
+        flt_r=c5.multiselect("🔍 Filtrar SKU",_rot_sku_opts,key="rf_sel",
+                              placeholder="Escribe código o nombre…")
 
         # ── Ventana para el cálculo del consumo ─────────────────────
         vc1, vc2, vc3 = st.columns([2, 2, 2])
@@ -4619,7 +4631,12 @@ def _render_tab_rot():
             s1,s2=st.tabs(["🚢 Marítimo","✈ Aéreo"])
             for tab_r,key,lbl in [(s1,"rot_m","Marítimo"),(s2,"rot_a","Aéreo")]:
                 with tab_r:
-                    df_r=pfilt(st.session_state[key],flt_r,cols=("Código","Nombre"))
+                    _df_src=st.session_state[key]
+                    if flt_r:
+                        _codes_rf={s.split(" — ")[0] for s in flt_r}
+                        df_r=_df_src[_df_src["Código"].astype(str).isin(_codes_rf)]
+                    else:
+                        df_r=_df_src
                     st.markdown(rot_table(df_r,f"rot_{lbl}"),unsafe_allow_html=True)
                     with st.expander("ℹ Leyenda — qué significa cada columna y cada estado"):
                         st.markdown("""
