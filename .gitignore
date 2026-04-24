@@ -43,3 +43,8 @@ env/
 *.bak*
 *bak2
 ventas.xlsx
+
+# Carpeta VARIOS/ — archivos legacy, backups y respaldos personales
+# (no forman parte del código de producción; ver VARIOS/desktop_legacy
+# para versión Tkinter antigua y VARIOS/inputs_crudos para xls originales)
+VARIOS/
