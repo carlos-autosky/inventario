@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.31"
+APP_VERSION = "v4.17.32"
 BUILD_TIME  = "23/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.31":
+if st.session_state.get("_app_version") != "v4.17.32":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.31"
+    st.session_state["_app_version"] = "v4.17.32"
 
 st.set_page_config(page_title=f"Inventario AutoSky {APP_VERSION}", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -1226,11 +1226,13 @@ button[data-baseweb="tab"] * {
 }
 button[data-baseweb="tab"] {
   padding: 12px 22px !important;
-  color: #64748b !important;
+  color: var(--text-color) !important;
+  opacity: 0.55 !important;
 }
 button[data-baseweb="tab"][aria-selected="true"],
 button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #003c78 !important;
+  color: var(--primary-color) !important;
+  opacity: 1 !important;
 }
 button[data-baseweb="tab"][aria-selected="true"] {
   background: rgba(0,160,220,0.25) !important;
@@ -1262,10 +1264,10 @@ button[data-baseweb="tab"][aria-selected="true"] {
 [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
   background: rgba(0,160,220,0.15) !important;
   border-radius: 6px 6px 0 0 !important;
-  color: #003c78 !important;
+  color: var(--primary-color) !important;
 }
 [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #003c78 !important;
+  color: var(--primary-color) !important;
 }
 
 /* NIVEL 3 — tabs doble-anidados (sub-sub-pestañas): aún más pequeño y gris */
@@ -1277,7 +1279,8 @@ button[data-baseweb="tab"][aria-selected="true"] {
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"] * {
   font-size: 12px !important;
   font-weight: 400 !important;
-  color: #94a3b8 !important;
+  color: var(--text-color) !important;
+  opacity: 0.5 !important;
 }
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"] {
   padding: 5px 10px !important;
@@ -1286,11 +1289,13 @@ button[data-baseweb="tab"][aria-selected="true"] {
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] {
   background: rgba(0,160,220,0.10) !important;
   border-radius: 5px 5px 0 0 !important;
-  color: #003c78 !important;
+  color: var(--primary-color) !important;
+  opacity: 1 !important;
 }
 [role="tabpanel"] [role="tabpanel"] button[data-baseweb="tab"][aria-selected="true"] * {
-  color: #003c78 !important;
+  color: var(--primary-color) !important;
   font-weight: 600 !important;
+  opacity: 1 !important;
 }
 
 /* Acercar fila 2 a fila 1: reducir padding del tabpanel que contiene sub-tabs */
@@ -2840,11 +2845,11 @@ with st.sidebar:
                 if not _dates.empty:
                     _d1=_dates.min().strftime("%d/%m/%Y")
                     _d2=_dates.max().strftime("%d/%m/%Y")
-                    _pc_bg    = "#f0f8ff"
-                    _pc_bdr   = "#b3dff2"
-                    _pc_title = "#0078b4"
-                    _pc_date  = "#0f172a"
-                    _pc_muted = "#64748b"
+                    _pc_bg    = "var(--secondary-background-color)"
+                    _pc_bdr   = "rgba(0,160,220,0.25)"
+                    _pc_title = "var(--primary-color)"
+                    _pc_date  = "var(--text-color)"
+                    _pc_muted = "var(--text-color);opacity:0.6"
                     st.markdown(
                         f"<div style='background:{_pc_bg};border:1px solid {_pc_bdr};"
                         f"border-radius:8px;padding:8px 12px;font-size:11px;margin-bottom:4px'>"
@@ -2939,11 +2944,11 @@ with st.sidebar:
     _vs = _ventas_status()
     if _vs["ok"]:
         # Card de "Ventas cargadas" al mismo estilo que "Período cargado"
-        _pc_bg    = "#f0f8ff"
-        _pc_bdr   = "#b3dff2"
-        _pc_title = "#0078b4"
-        _pc_date  = "#0f172a"
-        _pc_muted = "#64748b"
+        _pc_bg    = "var(--secondary-background-color)"
+        _pc_bdr   = "rgba(0,160,220,0.25)"
+        _pc_title = "var(--primary-color)"
+        _pc_date  = "var(--text-color)"
+        _pc_muted = "var(--text-color);opacity:0.6"
         _src_label = (
             "📁 xlsx local"
             if _vs.get("source") == "xlsx_local"
