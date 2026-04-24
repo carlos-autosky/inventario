@@ -49,8 +49,8 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.30"
-BUILD_TIME  = "22/04/2026 GMT-5"
+APP_VERSION = "v4.17.31"
+BUILD_TIME  = "23/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
 import logging as _logging
@@ -64,11 +64,11 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.30":
+if st.session_state.get("_app_version") != "v4.17.31":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.30"
+    st.session_state["_app_version"] = "v4.17.31"
 
-st.set_page_config(page_title="Inventario v4.10.1", page_icon="📦",
+st.set_page_config(page_title=f"Inventario AutoSky {APP_VERSION}", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
 
 # ── Estado compartido multi-sesión ──────────────────────────────
@@ -352,6 +352,7 @@ def _apply_importaciones_to_sku_base(base_df, imp_df, excluded_skus=None):
 # Ubicaciones personalizadas — archivo JSON global compartido entre sesiones
 UBIC_CUSTOM_PATH = os.path.join(_BASE_DIR, "ubicaciones_custom.json")
 LOGO_PATH        = os.path.join(_BASE_DIR, "logo.png")
+BANNER_LOGO_PATH = os.path.join(_BASE_DIR, "logo_banner_blanco.png")
 
 def _get_logo_path():
     """Devuelve la ruta del logo si existe, sino None.
@@ -670,7 +671,7 @@ def _get_cutoff_for_sales():
 
 def _run_analysis(eng, cutoff, wh_mode, sel_wh):
     """Ejecuta analyze directo. (Versión cacheada tuvo problemas con la
-    serialización del AnalysisResult en Streamlit; revertida en v4.17.30.)"""
+    serialización del AnalysisResult en Streamlit; revertida en v4.17.31.)"""
     return eng.analyze(str(cutoff), wh_mode, sel_wh)
 
 @st.cache_resource
@@ -914,7 +915,7 @@ def _init():
     defs = {"engine": _get_shared_engine(), "result": None,
             "files_loaded": shared_files["files_loaded"],
             "files_stats":  shared_files["files_stats"],
-            "log": [], "dark_mode": False,
+            "log": [],
             # Filtros globales persistidos (se cargan de filtros_config.json)
             "excluded_skus": set(shared_filtros["excluded_skus"]),
             "excl_wh":       set(shared_filtros["excluded_warehouses"])}
@@ -984,18 +985,11 @@ if st.session_state.get("_ventas_df_src") != _cur_ventas_src:
     st.session_state["ventas_df"] = _get_ventas_df()
     st.session_state["_ventas_df_src"] = _cur_ventas_src
 eng = st.session_state.engine
-dark = st.session_state.dark_mode
 _perf("session_init")
 
-# ── Tema ────────────────────────────────────────────────────────
-if dark:
-    BG,PANEL,BORDER,TEXT,MUTED = "#0f172a","#1e293b","#334155","#f1f5f9","#94a3b8"
-    TH,TDE,TDO,HOVER = "#0f172a","#1e293b","#162032","#243447"
-    ACC,SUC,WRN,DNG = "#00a0dc","#4ade80","#fbbf24","#f87171"
-else:
-    BG,PANEL,BORDER,TEXT,MUTED = "#f8fafc","#ffffff","#e2e8f0","#0f172a","#64748b"
-    TH,TDE,TDO,HOVER = "#f1f5f9","#ffffff","#f8fafc","#f0f8ff"
-    ACC,SUC,WRN,DNG = "#0078b4","#16a34a","#d97706","#dc2626"
+# Token usado por colores inline. El tema (light/dark) lo maneja
+# Streamlit via config.toml — no hay toggle custom.
+MUTED = "#64748b"
 
 # ── Autosky Design System CSS ─────────────────────────────
 _CSS = '''
@@ -1021,14 +1015,26 @@ html,body,[data-testid='stAppViewContainer']{
   font-family:'Inter','Segoe UI',system-ui,sans-serif;
   font-size:13px; color:var(--text);
 }
+/* Reducir el hueco vacio sobre el banner (padding top del main container) */
+[data-testid='stAppViewContainer'] .main .block-container,
+.main .block-container,
+[data-testid='stMainBlockContainer']{
+  padding-top:1rem!important;
+}
+/* Header translucido sin fondo, pero mantener Deploy y menu visibles */
+[data-testid='stHeader']{ background:transparent!important; }
+[data-testid='stDecoration']{ display:none!important; }
 .as-banner{
   background:linear-gradient(135deg,#00a0dc,#0078b4,#003c78)!important;
   padding:14px 20px!important; border-radius:10px; margin-bottom:16px;
   color:#ffffff!important;
   box-shadow:0 4px 14px rgba(0,60,120,.25);
+  display:flex; align-items:center; gap:18px;
 }
 .as-banner,
 .as-banner * { color:#ffffff!important; }
+.as-banner-logo{ height:60px; width:auto; flex:0 0 auto; }
+.as-banner-text{ flex:1 1 auto; min-width:0; }
 .as-title{
   font-size:18px!important; font-weight:700!important; color:#ffffff!important;
   letter-spacing:.02em; line-height:1.2;
@@ -1201,184 +1207,6 @@ section[data-testid='stSidebar'] .stCheckbox label{
 .stSelectbox>div>div,.stMultiSelect>div>div{border-radius:var(--radius-sm)!important;}
 .stTextInput>div>div>input{border-radius:var(--radius-sm)!important;}
 
-/* ═══════════════════════════════════════════════
-   FORZAR TEMA CLARO EN TODOS LOS COMPONENTES
-   ═══════════════════════════════════════════════ */
-
-/* App background completo */
-.stApp, .stApp > div,
-[data-testid="stAppViewContainer"],
-[data-testid="stAppViewBlockContainer"],
-[data-testid="block-container"],
-.main, .main .block-container {
-  background-color: #f0f8ff !important;
-  color: #0f172a !important;
-}
-
-/* Sidebar fondo blanco */
-[data-testid="stSidebar"],
-[data-testid="stSidebar"] > div,
-[data-testid="stSidebar"] .sidebar-content {
-  background-color: #ffffff !important;
-}
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] div {
-  color: #0f172a !important;
-}
-
-/* Todos los textos */
-p, span, div, label, h1, h2, h3, h4 {
-  color: #0f172a;
-}
-
-/* File uploader */
-[data-testid="stFileUploader"],
-[data-testid="stFileUploadDropzone"] {
-  background-color: #ffffff !important;
-  border: 2px dashed #b3dff2 !important;
-  border-radius: 10px !important;
-  color: #0f172a !important;
-}
-[data-testid="stFileUploadDropzone"] * { color: #0f172a !important; }
-[data-testid="stFileUploadDropzone"]:hover {
-  border-color: #00a0dc !important;
-  background-color: #f0f8ff !important;
-}
-
-/* Upload button dentro del dropzone — mismo look que los Calcular primary */
-[data-testid="stFileUploader"] button {
-  background: var(--sky) !important;
-  color: #ffffff !important;
-  border-radius: var(--radius-sm) !important;
-  border: 1px solid var(--sky) !important;
-  font-weight: 600 !important;
-}
-[data-testid="stFileUploader"] button * { color: #ffffff !important; }
-[data-testid="stFileUploader"] button:hover {
-  background: var(--sky-d) !important;
-  border-color: var(--sky-d) !important;
-  color: #ffffff !important;
-}
-[data-testid="stFileUploader"] button:hover * { color: #ffffff !important; }
-
-/* Uploaded file item */
-[data-testid="stFileUploaderFile"],
-[data-testid="uploadedFileData"] {
-  background: #f0f8ff !important;
-  border: 1px solid #b3dff2 !important;
-  border-radius: 8px !important;
-}
-[data-testid="stFileUploaderFile"] * { color: #0f172a !important; }
-
-/* Inputs, selects */
-.stTextInput input, .stNumberInput input,
-.stDateInput input, .stTimeInput input {
-  background: #ffffff !important;
-  color: #0f172a !important;
-  border: 1px solid #e2e8f0 !important;
-  border-radius: 6px !important;
-}
-.stSelectbox > div > div > div,
-.stMultiSelect > div > div > div {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-
-/* Dropdown options */
-[data-baseweb="popover"], [data-baseweb="menu"],
-[role="listbox"], [role="option"] {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[role="option"]:hover { background: #f0f8ff !important; }
-
-/* Number input */
-[data-testid="stNumberInput"] input {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-[data-testid="stNumberInput"] button {
-  background: #f1f5f9 !important;
-  color: #0f172a !important;
-  border: 1px solid #e2e8f0 !important;
-}
-
-/* Checkbox, toggle */
-[data-testid="stCheckbox"] label,
-[data-testid="stToggle"] label { color: #0f172a !important; }
-
-/* Metrics */
-[data-testid="stMetric"] * { color: #0f172a !important; }
-[data-testid="stMetricValue"] {
-  color: #0f172a !important;
-  font-family: 'JetBrains Mono', monospace !important;
-}
-
-/* Success/Info/Warning/Error alerts */
-.stAlert > div { border-radius: 8px !important; }
-[data-testid="stNotification"] { border-radius: 8px !important; }
-
-/* Success boxes (like "1 archivo cargado") */
-.element-container .stAlert [data-baseweb="notification"] {
-  background: #ecfdf5 !important;
-  color: #065f46 !important;
-  border: 1px solid #6ee7b7 !important;
-}
-
-/* Dividers */
-hr { border-color: #e2e8f0 !important; }
-
-/* Spinner */
-[data-testid="stSpinner"] { color: #00a0dc !important; }
-
-/* Caption text */
-.stCaption, [data-testid="stCaptionContainer"] {
-  color: #64748b !important;
-}
-
-/* Markdown text */
-.stMarkdown p, .stMarkdown span { color: #0f172a !important; }
-
-/* El banner corporativo va por encima del tema claro (mayor especificidad
-   que .stMarkdown span, que si no gana y pinta el título en negro) */
-.stMarkdown .as-banner, .stMarkdown .as-banner *,
-.as-banner h1.as-title, .as-banner h1.as-title *,
-.as-banner .as-ver-inline, .as-banner .as-subtitle, .as-banner .as-footer {
-  color: #ffffff !important;
-}
-
-/* Tabs area background */
-[data-testid="stHorizontalBlock"],
-[data-testid="stVerticalBlock"] {
-  background: transparent !important;
-}
-
-/* Column backgrounds */
-[data-testid="column"] { background: transparent !important; }
-
-/* Expander */
-[data-testid="stExpander"] {
-  background: #ffffff !important;
-  border: 1px solid #e2e8f0 !important;
-  border-radius: 10px !important;
-}
-[data-testid="stExpander"] summary { color: #0f172a !important; }
-
-/* Download button */
-.stDownloadButton button {
-  background: #f8fafc !important;
-  color: #0078b4 !important;
-  border: 1px solid #b3dff2 !important;
-  border-radius: 6px !important;
-  font-weight: 600 !important;
-}
-.stDownloadButton button:hover {
-  background: #f0f8ff !important;
-  border-color: #00a0dc !important;
-}
-
 /* ══ Jerarquía de pestañas: nivel 1 (macro-grupos) vs nivel 2+ (sub) ══ */
 /* BASE — fila 1: fondo marcado, bordes fuertes, letra grande/uppercase/bold */
 div[data-baseweb="tab-list"] {
@@ -1470,90 +1298,7 @@ button[data-baseweb="tab"][aria-selected="true"] {
   padding-top: 4px !important;
 }
 '''
-# ── CSS adicional tema oscuro (se inyecta sobre el base claro) ──
-_DARK_CSS = '''
-html,body,[data-testid='stAppViewContainer'],
-.stApp, .stApp > div,
-[data-testid="stAppViewContainer"],
-[data-testid="stAppViewBlockContainer"],
-[data-testid="block-container"],
-.main, .main .block-container {
-  background-color: #0f172a !important;
-  color: #f1f5f9 !important;
-}
-:root {
-  --bg:#0f172a; --surface:#1e293b; --surface2:#162032;
-  --border:#334155; --text:#f1f5f9; --text2:#cbd5e1; --text3:#94a3b8;
-  --sky-ll:#162032; --sky-l:#1e3a5f;
-  --green-l:#052e16; --red-l:#450a0a; --amber-l:#451a03; --purple-l:#2e1065;
-}
-section[data-testid='stSidebar'],
-[data-testid="stSidebar"],
-[data-testid="stSidebar"] > div {
-  background-color: #1e293b !important;
-}
-[data-testid="stSidebar"] p,
-[data-testid="stSidebar"] span,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] div { color: #f1f5f9 !important; }
-p, span, div, label, h1, h2, h3, h4 { color: #f1f5f9; }
-.stTextInput input, .stNumberInput input,
-.stDateInput input, .stTimeInput input {
-  background: #1e293b !important; color: #f1f5f9 !important;
-  border: 1px solid #334155 !important;
-}
-.stSelectbox > div > div > div,
-.stMultiSelect > div > div > div {
-  background: #1e293b !important; color: #f1f5f9 !important;
-}
-[data-baseweb="popover"], [data-baseweb="menu"],
-[role="listbox"], [role="option"] {
-  background: #1e293b !important; color: #f1f5f9 !important;
-}
-[role="option"]:hover { background: #0f172a !important; }
-[data-testid="stFileUploader"],
-[data-testid="stFileUploadDropzone"] {
-  background-color: #1e293b !important;
-  border: 2px dashed #334155 !important; color: #f1f5f9 !important;
-}
-[data-testid="stFileUploadDropzone"] * { color: #f1f5f9 !important; }
-[data-testid="stFileUploaderFile"],
-[data-testid="uploadedFileData"] {
-  background: #162032 !important;
-  border: 1px solid #334155 !important;
-}
-[data-testid="stFileUploaderFile"] * { color: #f1f5f9 !important; }
-[data-testid="stFileUploader"] button {
-  background: var(--sky) !important; color: #ffffff !important;
-  border: 1px solid var(--sky) !important;
-}
-[data-testid="stFileUploader"] button * { color: #ffffff !important; }
-[data-testid="stFileUploader"] button:hover {
-  background: var(--sky-d) !important;
-  border-color: var(--sky-d) !important;
-}
-[data-testid="stFileUploader"] button:hover * { color: #ffffff !important; }
-[data-testid="stExpander"] {
-  background: #1e293b !important; border: 1px solid #334155 !important;
-}
-[data-testid="stExpander"] summary { color: #f1f5f9 !important; }
-[data-testid="stMetric"] * { color: #f1f5f9 !important; }
-.stMarkdown p, .stMarkdown span { color: #f1f5f9 !important; }
-hr { border-color: #334155 !important; }
-.stDownloadButton button {
-  background: #1e293b !important; color: #00a0dc !important;
-  border: 1px solid #334155 !important;
-}
-.stDownloadButton button:hover {
-  background: #0f172a !important; border-color: #00a0dc !important;
-}
-.it tbody td { color: #f1f5f9 !important; }
-.it thead th { background: #162032 !important; color: #94a3b8 !important; }
-.it tbody tr:hover td { background: #162032 !important; }
-.it tfoot tr.tot td { background: #1e3a5f !important; color: #00a0dc !important; }
-'''
-
-_ACTIVE_CSS = _CSS + (_DARK_CSS if dark else "")
+_ACTIVE_CSS = _CSS
 st.markdown(f'''<style>{_ACTIVE_CSS}</style>
 <script>
 // ── Zoom ──────────────────────────────────────────────────────
@@ -1797,6 +1542,21 @@ def _logo_data_uri():
         _ext = os.path.splitext(_p)[1].lower().lstrip(".") or "png"
         _mt = "image/jpeg" if _ext in ("jpg", "jpeg") else f"image/{_ext}"
         return f"data:{_mt};base64,{_b64}"
+    except Exception:
+        return ""
+
+
+@st.cache_data(show_spinner=False)
+def _banner_logo_data_uri():
+    """Logo blanco con fondo transparente para el banner corporativo.
+    Data URI base64 — evita dependencia de static serving en Cloud."""
+    if not os.path.exists(BANNER_LOGO_PATH):
+        return ""
+    try:
+        import base64
+        with open(BANNER_LOGO_PATH, "rb") as f:
+            _b64 = base64.b64encode(f.read()).decode("ascii")
+        return f"data:image/png;base64,{_b64}"
     except Exception:
         return ""
 
@@ -3002,25 +2762,20 @@ def _comp_tbl(df, nc, uid, freeze_cols=2, height=600, title="", groups=None, leg
 # ── Sidebar ─────────────────────────────────────────────────────
 _perf("before_sidebar")
 with st.sidebar:
-    ca,cb=st.columns([4,1])
-    with ca:
-        st.markdown(
-            f'''<div style="font-size:16px;font-weight:800;color:#00a0dc;
-            font-family:Inter,sans-serif;letter-spacing:.04em">
-            AUTO<span style="font-weight:300;opacity:.8">SKY</span>
-            </div>
-            <div style="font-size:10px;font-family:monospace;color:#475569;margin-top:2px">
-            <b style="color:#00a0dc">{APP_VERSION}</b> &nbsp;|&nbsp; {BUILD_TIME}
-            </div>''',
-            unsafe_allow_html=True
-        )
-    with cb:
-        st.markdown("")
-        nd=st.toggle("🌙",value=dark,help="Tema oscuro/claro")
-        if nd!=dark: st.session_state.dark_mode=nd; st.rerun()
+    st.markdown(
+        f'''<div style="font-size:16px;font-weight:800;color:#00a0dc;
+        font-family:Inter,sans-serif;letter-spacing:.04em">
+        AUTO<span style="font-weight:300;opacity:.8">SKY</span>
+        </div>
+        <div style="font-size:10px;font-family:monospace;color:#475569;margin-top:2px">
+        <b style="color:#00a0dc">{APP_VERSION}</b> &nbsp;|&nbsp; {BUILD_TIME}
+        </div>''',
+        unsafe_allow_html=True
+    )
     st.divider()
 
-    st.markdown("### 📂 Cargar Excel")
+    st.markdown("## CARGA DE DATOS")
+    st.markdown("### 📂 Cargar archivo de movimientos de inventario")
     st.caption("XLS / XLSX del sistema contable — acumulativo")
     uploaded=st.file_uploader("Archivos",type=["xlsx","xls"],
                                accept_multiple_files=True,label_visibility="collapsed")
@@ -3085,11 +2840,11 @@ with st.sidebar:
                 if not _dates.empty:
                     _d1=_dates.min().strftime("%d/%m/%Y")
                     _d2=_dates.max().strftime("%d/%m/%Y")
-                    _pc_bg    = "#1e3a5f" if dark else "#f0f8ff"
-                    _pc_bdr   = "#0064a0" if dark else "#b3dff2"
-                    _pc_title = "#b3dff2" if dark else "#0078b4"
-                    _pc_date  = "#f1f5f9" if dark else "#0f172a"
-                    _pc_muted = "#94a3b8" if dark else "#64748b"
+                    _pc_bg    = "#f0f8ff"
+                    _pc_bdr   = "#b3dff2"
+                    _pc_title = "#0078b4"
+                    _pc_date  = "#0f172a"
+                    _pc_muted = "#64748b"
                     st.markdown(
                         f"<div style='background:{_pc_bg};border:1px solid {_pc_bdr};"
                         f"border-radius:8px;padding:8px 12px;font-size:11px;margin-bottom:4px'>"
@@ -3133,8 +2888,8 @@ with st.sidebar:
                     width='stretch',key="exp_cons")
     st.divider()
 
-    # ── Panel Ventas — mismo estilo visual que "Cargar Excel" ──
-    st.markdown("### 💼 Ventas")
+    # ── Panel Ventas — mismo estilo visual que Cargar movimientos ──
+    st.markdown("### 💼 Cargar archivo de ventas")
     st.caption("XLSX del sistema contable — acumulativo")
 
     # Uploader (acepta múltiples archivos, auto-detecta formato)
@@ -3184,11 +2939,11 @@ with st.sidebar:
     _vs = _ventas_status()
     if _vs["ok"]:
         # Card de "Ventas cargadas" al mismo estilo que "Período cargado"
-        _pc_bg    = "#1e3a5f" if dark else "#f0f8ff"
-        _pc_bdr   = "#0064a0" if dark else "#b3dff2"
-        _pc_title = "#b3dff2" if dark else "#0078b4"
-        _pc_date  = "#f1f5f9" if dark else "#0f172a"
-        _pc_muted = "#94a3b8" if dark else "#64748b"
+        _pc_bg    = "#f0f8ff"
+        _pc_bdr   = "#b3dff2"
+        _pc_title = "#0078b4"
+        _pc_date  = "#0f172a"
+        _pc_muted = "#64748b"
         _src_label = (
             "📁 xlsx local"
             if _vs.get("source") == "xlsx_local"
@@ -3342,11 +3097,11 @@ r=st.session_state.result
 # ── Sin datos ────────────────────────────────────────────────────
 if eng.raw_df is None:
     st.markdown("## 📦 Sistema de Inventario")
-    _card_bg  = "#1e293b" if dark else "#f0f8ff"
-    _card_bdr = "#334155" if dark else "#b3dff2"
-    _card_ver = "#00a0dc" if dark else "#0078b4"
-    _card_sep = "#475569" if dark else "#94a3b8"
-    _card_txt = "#94a3b8" if dark else "#475569"
+    _card_bg  = "#f0f8ff"
+    _card_bdr = "#b3dff2"
+    _card_ver = "#0078b4"
+    _card_sep = "#94a3b8"
+    _card_txt = "#475569"
     st.markdown(f"""
 <div style='display:inline-flex;align-items:center;gap:12px;
   background:{_card_bg};border:1px solid {_card_bdr};border-radius:8px;
@@ -3376,12 +3131,39 @@ _banner_subtitle = (
     if _banner_corte_txt
     else "Sin datos cargados — sube el consolidado.xlsx"
 )
+_banner_logo_uri = _banner_logo_data_uri()
+_banner_logo_html = (
+    f'<img src="{_banner_logo_uri}" alt="AutoSky" class="as-banner-logo"/>'
+    if _banner_logo_uri else ""
+)
+# Reloj en vivo GMT-5 (America/Guayaquil) vía iframe srcdoc — el <script>
+# corre dentro del iframe aislado, no lo sanitiza Streamlit.
+import html as _html_esc
+_clock_doc = (
+    '<body style="margin:0;padding:0;background:transparent;'
+    "color:#fff;font:11px 'JetBrains Mono',monospace;line-height:1;\">"
+    '<span id="c">--:--:--</span>'
+    '<script>'
+    'function t(){var n=new Date();'
+    'document.getElementById("c").textContent='
+    'n.toLocaleTimeString("es-EC",{timeZone:"America/Guayaquil",hour12:false});}'
+    't();setInterval(t,1000);'
+    '</script></body>'
+)
+_clock_iframe = (
+    f'<iframe srcdoc="{_html_esc.escape(_clock_doc, quote=True)}" '
+    'style="border:0;background:transparent;width:58px;height:12px;'
+    'vertical-align:middle;overflow:hidden;" '
+    'scrolling="no" sandbox="allow-scripts"></iframe>'
+)
+_build_clean = BUILD_TIME.replace(" GMT-5", "").strip()
 st.markdown(f"""<div class="as-banner">
-  <h1 class="as-title">📦 CONTROL DE INVENTARIO
-    <span class="as-ver-inline">{APP_VERSION}</span>
-  </h1>
-  <div class="as-subtitle">{_banner_subtitle}</div>
-  <div class="as-footer">🕐 {APP_VERSION} · Compilado: {BUILD_TIME}</div>
+  {_banner_logo_html}
+  <div class="as-banner-text">
+    <h1 class="as-title">CONTROL DE INVENTARIO</h1>
+    <div class="as-subtitle">{_banner_subtitle}</div>
+    <div class="as-footer">🕐 {_clock_iframe} · {APP_VERSION} · Compilado: {_build_clean}</div>
+  </div>
 </div>""", unsafe_allow_html=True)
 
 # ── Período de datos cargados ───────────────────────────────────
@@ -3391,12 +3173,12 @@ if eng.raw_df is not None and "Fecha" in eng.raw_df.columns:
         if not _all_d.empty:
             _pd1=_all_d.min().strftime("%d/%m/%Y")
             _pd2=_all_d.max().strftime("%d/%m/%Y")
-            _pb_bg  = "#1e3a5f" if dark else "#f0f8ff"
-            _pb_bdr = "#0064a0" if dark else "#b3dff2"
-            _pb_lbl = "#b3dff2" if dark else "#475569"
-            _pb_dt  = "#f1f5f9" if dark else "#0f172a"
-            _pb_arr = "#b3dff2" if dark else "#94a3b8"
-            _pb_mut = "#94a3b8" if dark else "#64748b"
+            _pb_bg  = "#f0f8ff"
+            _pb_bdr = "#b3dff2"
+            _pb_lbl = "#475569"
+            _pb_dt  = "#0f172a"
+            _pb_arr = "#94a3b8"
+            _pb_mut = "#64748b"
             st.markdown(
                 f"<div class='as-periodo-banner' style='display:inline-flex;align-items:center;gap:16px;"
                 f"background:{_pb_bg};border:1px solid {_pb_bdr};border-radius:8px;"
@@ -3666,7 +3448,7 @@ with G_MAN:
 
                 st.markdown("---")
                 st.caption(
-                    "ℹ Esta sección es **manual** en v4.17.30. La sincronización "
+                    "ℹ Esta sección es **manual** en v4.17.31. La sincronización "
                     "automática (al subir archivos / al limpiar / al arrancar "
                     "Cloud) se agrega en versiones posteriores (B2–B6)."
                 )
@@ -7451,6 +7233,240 @@ def _render_tab_aud():
         for ico, msg in issues:
             if ico == "⚠": st.warning(f"{ico} {msg}")
             else:          st.info(f"{ico} {msg}")
+
+    # ── Cruce inventario ↔ ventas ──
+    st.markdown("#### 🔀 Cruce inventario ↔ ventas")
+    st.caption(
+        "Verifica que cada factura / nota de crédito del consolidado de inventario "
+        "tenga su contraparte en el consolidado de ventas (y viceversa). "
+        "Útil para detectar días sin subir a Contifico o desincronizaciones."
+    )
+
+    ventas_df = st.session_state.get("ventas_df")
+    _cruce_ready = (
+        ventas_df is not None and len(ventas_df) > 0
+        and "# Documento" in ventas_df.columns
+        and "Tipo de Documento" in ventas_df.columns
+    )
+    if ventas_df is None or len(ventas_df) == 0:
+        st.info("Carga ventas_consolidado.xlsx (panel lateral) para ejecutar el cruce.")
+    elif not _cruce_ready:
+        st.warning("El archivo de ventas no tiene columnas `# Documento` o `Tipo de Documento` — no se puede cruzar.")
+    else:
+        bc1, bc2 = st.columns([1, 3])
+        _run_cruce = bc1.button(
+            "🔀 Cruzar movimientos", type="primary",
+            key="aud_cruce_run", width='stretch',
+        )
+        _last_ts = st.session_state.get("aud_cruce_ts")
+        if _last_ts:
+            bc2.caption(f"Último cruce ejecutado: **{_last_ts}**. Presiona el botón para recalcular con los datos actuales.")
+        else:
+            bc2.caption("El cruce puede tardar unos segundos. Solo se ejecuta cuando presionas el botón, no automáticamente.")
+
+        if _run_cruce:
+            import re as _re_doc
+            _DOC_PFX_RE  = _re_doc.compile(r"^(FAC|NCT|NVE)[\s\-]*(\d.*)$")
+            _DOC_LEAD_RE = _re_doc.compile(r"^\D+")
+            def _norm_inv(s):
+                # Inventario: 'FAC 001-002-000003230' → 'FAC:001-002-000003230'.
+                # La clave incluye el tipo de documento para que un FAC y un NCT
+                # que compartan numero no puedan colisionar en ningun caso.
+                s = str(s).strip().upper()
+                m = _DOC_PFX_RE.match(s)
+                if m:
+                    return f"{m.group(1)}:{m.group(2).strip()}"
+                return f"?:{_DOC_LEAD_RE.sub('', s)}"
+            def _just_num(s):
+                return _DOC_LEAD_RE.sub("", str(s).strip().upper())
+
+            with st.spinner("Cruzando inventario ↔ ventas…"):
+                inv_fac = df.loc[df["_is"]].copy()
+                inv_nct = df.loc[df["_ic"]].copy()
+                inv_fac["_doc"] = inv_fac["Referencia"].apply(_norm_inv)
+                inv_nct["_doc"] = inv_nct["Referencia"].apply(_norm_inv)
+
+                vdf = ventas_df.copy()
+                vdf["_fe"] = pd.to_datetime(vdf["Fecha de Emisión"], errors="coerce")
+                v_fac = vdf[vdf["Tipo de Documento"] == "Factura"].copy()
+                v_nct = vdf[vdf["Tipo de Documento"] == "Nota de Crédito"].copy()
+                v_fac["_doc"] = "FAC:" + v_fac["# Documento"].apply(_just_num)
+                v_nct["_doc"] = "NCT:" + v_nct["# Documento"].apply(_just_num)
+
+                _fe_inv = pd.to_datetime(df["Fecha"], errors="coerce").dropna()
+                _fe_vta = vdf["_fe"].dropna()
+                if _fe_inv.empty or _fe_vta.empty:
+                    st.session_state["aud_cruce_result"] = {"status": "no_dates"}
+                else:
+                    fmin_inv, fmax_inv = _fe_inv.min(), _fe_inv.max()
+                    fmin_vta, fmax_vta = _fe_vta.min(), _fe_vta.max()
+                    fmin_common = max(fmin_inv, fmin_vta)
+                    fmax_common = min(fmax_inv, fmax_vta)
+                    if fmin_common > fmax_common:
+                        st.session_state["aud_cruce_result"] = {
+                            "status": "no_overlap",
+                            "fmin_inv": fmin_inv, "fmax_inv": fmax_inv,
+                            "fmin_vta": fmin_vta, "fmax_vta": fmax_vta,
+                        }
+                    else:
+                        _inv_fac_w = inv_fac[pd.to_datetime(inv_fac["Fecha"], errors="coerce").between(fmin_common, fmax_common)]
+                        _inv_nct_w = inv_nct[pd.to_datetime(inv_nct["Fecha"], errors="coerce").between(fmin_common, fmax_common)]
+                        _v_fac_w   = v_fac[v_fac["_fe"].between(fmin_common, fmax_common)]
+                        _v_nct_w   = v_nct[v_nct["_fe"].between(fmin_common, fmax_common)]
+
+                        s_inv_fac = set(_inv_fac_w["_doc"].unique())
+                        s_inv_nct = set(_inv_nct_w["_doc"].unique())
+                        s_vta_fac = set(_v_fac_w["_doc"].unique())
+                        s_vta_nct = set(_v_nct_w["_doc"].unique())
+
+                        fac_only_inv = s_inv_fac - s_vta_fac
+                        fac_only_vta = s_vta_fac - s_inv_fac
+                        nct_only_inv = s_inv_nct - s_vta_nct
+                        nct_only_vta = s_vta_nct - s_inv_nct
+
+                        _gap_rows = []
+                        for _label, _docs, _src, _date_col in [
+                            ("FAC solo en inventario", fac_only_inv, _inv_fac_w, "Fecha"),
+                            ("FAC solo en ventas",     fac_only_vta, _v_fac_w,   "_fe"),
+                            ("NC solo en inventario",  nct_only_inv, _inv_nct_w, "Fecha"),
+                            ("NC solo en ventas",      nct_only_vta, _v_nct_w,   "_fe"),
+                        ]:
+                            if not _docs:
+                                continue
+                            _sub = _src[_src["_doc"].isin(_docs)].copy()
+                            _sub["_fecha"] = pd.to_datetime(_sub[_date_col], errors="coerce").dt.date
+                            for _f, _cnt in _sub.groupby("_fecha").size().items():
+                                _gap_rows.append({"Fecha": _f, "Origen": _label, "Documentos": int(_cnt)})
+
+                        st.session_state["aud_cruce_result"] = {
+                            "status": "ok",
+                            "fmin_inv": fmin_inv, "fmax_inv": fmax_inv,
+                            "fmin_vta": fmin_vta, "fmax_vta": fmax_vta,
+                            "fmin_common": fmin_common, "fmax_common": fmax_common,
+                            "inv_fac_w": _inv_fac_w, "inv_nct_w": _inv_nct_w,
+                            "v_fac_w": _v_fac_w,     "v_nct_w": _v_nct_w,
+                            "s_inv_fac": s_inv_fac,  "s_vta_fac": s_vta_fac,
+                            "fac_only_inv": fac_only_inv, "fac_only_vta": fac_only_vta,
+                            "nct_only_inv": nct_only_inv, "nct_only_vta": nct_only_vta,
+                            "gap_rows": _gap_rows,
+                        }
+            st.session_state["aud_cruce_ts"] = _now_ec().strftime("%d/%m/%Y %H:%M:%S")
+
+        # ── Render del resultado (si existe en session_state) ──
+        R = st.session_state.get("aud_cruce_result")
+        if R is None:
+            pass  # aún no se ejecutó — solo se ve el botón
+        elif R.get("status") == "no_dates":
+            st.warning("Sin fechas válidas en alguna de las fuentes — no se puede calcular ventana común.")
+        elif R.get("status") == "no_overlap":
+            st.warning(
+                f"No hay solape de fechas entre inventario "
+                f"({R['fmin_inv'].strftime('%d/%m/%Y')}–{R['fmax_inv'].strftime('%d/%m/%Y')}) "
+                f"y ventas "
+                f"({R['fmin_vta'].strftime('%d/%m/%Y')}–{R['fmax_vta'].strftime('%d/%m/%Y')}) — no se puede cruzar."
+            )
+        else:
+            st.caption(
+                f"Ventana analizada: **{R['fmin_common'].strftime('%d/%m/%Y')} → "
+                f"{R['fmax_common'].strftime('%d/%m/%Y')}** · "
+                f"inventario: {R['fmin_inv'].strftime('%d/%m/%Y')}–{R['fmax_inv'].strftime('%d/%m/%Y')} · "
+                f"ventas: {R['fmin_vta'].strftime('%d/%m/%Y')}–{R['fmax_vta'].strftime('%d/%m/%Y')}"
+            )
+
+            with st.expander("🔬 Diagnóstico de normalización (verificar formato)", expanded=False):
+                _d1, _d2 = st.columns(2)
+                with _d1:
+                    st.markdown("**Inventario** — primeros 10 `# Documento` normalizados (FAC)")
+                    _raw_inv = R["inv_fac_w"][["Referencia", "_doc"]].drop_duplicates("_doc").head(10)
+                    st.dataframe(_raw_inv, width='stretch', hide_index=True)
+                with _d2:
+                    st.markdown("**Ventas** — primeros 10 `# Documento` normalizados (FAC)")
+                    _raw_vta = R["v_fac_w"][["# Documento", "_doc"]].drop_duplicates("_doc").head(10)
+                    st.dataframe(_raw_vta, width='stretch', hide_index=True)
+                _inter = R["s_inv_fac"] & R["s_vta_fac"]
+                st.caption(
+                    f"Intersección FAC: **{len(_inter):,}** documentos matchean · "
+                    f"si es 0 o muy bajo, los formatos no coinciden y hay que "
+                    f"ajustar la normalización."
+                )
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("FAC solo en inventario", f"{len(R['fac_only_inv']):,}",
+                      help="Facturas en inventario sin contraparte en ventas. Suele indicar días sin subir a Contifico.")
+            c2.metric("FAC solo en ventas", f"{len(R['fac_only_vta']):,}",
+                      help="Facturas en ventas sin movimiento de inventario. Anomalía rara.")
+            c3.metric("NC solo en inventario", f"{len(R['nct_only_inv']):,}",
+                      help="Notas de crédito (devolución cliente) sin contraparte en ventas.")
+            c4.metric("NC solo en ventas", f"{len(R['nct_only_vta']):,}",
+                      help="Notas de crédito en ventas sin movimiento de inventario. Anomalía.")
+
+            total_gap = len(R["fac_only_inv"]) + len(R["fac_only_vta"]) + len(R["nct_only_inv"]) + len(R["nct_only_vta"])
+
+            if total_gap == 0:
+                st.success("✅ Cruce perfecto. Todo documento de inventario tiene su contraparte en ventas (y viceversa).")
+            else:
+                if R["gap_rows"]:
+                    st.markdown("##### 📅 Días con diferencias")
+                    _gap_df = pd.DataFrame(R["gap_rows"]).sort_values(["Fecha", "Origen"])
+                    st.dataframe(_gap_df, width='stretch', hide_index=True, height=240)
+
+                def _detail_inv(_lbl, _docs, _src):
+                    if not _docs: return
+                    with st.expander(f"🔎 {_lbl} · {len(_docs):,} documento(s)"):
+                        _sub = _src[_src["_doc"].isin(_docs)].copy()
+                        _cols = ["Fecha", "_doc", "Referencia", "Código Producto",
+                                 "Nombre Producto", "Cantidad", "Valor Total"]
+                        _cols = [c for c in _cols if c in _sub.columns]
+                        _sub = _sub[_cols].rename(columns={"_doc": "# Documento"})
+                        st.dataframe(_sub, width='stretch', hide_index=True, height=300)
+
+                def _detail_vta(_lbl, _docs, _src):
+                    if not _docs: return
+                    with st.expander(f"🔎 {_lbl} · {len(_docs):,} documento(s)"):
+                        _sub = _src[_src["_doc"].isin(_docs)].copy()
+                        _cols = ["Fecha de Emisión", "_doc", "Razón Social",
+                                 "Código de Bien Servicio", "Nombre de Bien Servicio",
+                                 "Cantidad", "Total"]
+                        _cols = [c for c in _cols if c in _sub.columns]
+                        _sub = _sub[_cols].rename(columns={"_doc": "# Documento"})
+                        st.dataframe(_sub, width='stretch', hide_index=True, height=300)
+
+                _detail_inv("FAC solo en inventario", R["fac_only_inv"], R["inv_fac_w"])
+                _detail_vta("FAC solo en ventas",     R["fac_only_vta"], R["v_fac_w"])
+                _detail_inv("NC solo en inventario",  R["nct_only_inv"], R["inv_nct_w"])
+                _detail_vta("NC solo en ventas",      R["nct_only_vta"], R["v_nct_w"])
+
+                # Export consolidado del cruce (4 pestañas + resumen por día)
+                _buf = io.BytesIO()
+                with pd.ExcelWriter(_buf, engine="openpyxl") as _xw:
+                    def _sheet_inv(_name, _docs, _src):
+                        _sub = _src[_src["_doc"].isin(_docs)].copy() if _docs else _src.iloc[0:0].copy()
+                        _cols = ["Fecha", "_doc", "Referencia", "Código Producto",
+                                 "Nombre Producto", "Cantidad", "Valor Total"]
+                        _cols = [c for c in _cols if c in _sub.columns]
+                        _sub[_cols].rename(columns={"_doc": "# Documento"}).to_excel(_xw, sheet_name=_name, index=False)
+                    def _sheet_vta(_name, _docs, _src):
+                        _sub = _src[_src["_doc"].isin(_docs)].copy() if _docs else _src.iloc[0:0].copy()
+                        _cols = ["Fecha de Emisión", "_doc", "Razón Social",
+                                 "Código de Bien Servicio", "Nombre de Bien Servicio",
+                                 "Cantidad", "Total"]
+                        _cols = [c for c in _cols if c in _sub.columns]
+                        _sub[_cols].rename(columns={"_doc": "# Documento"}).to_excel(_xw, sheet_name=_name, index=False)
+                    _sheet_inv("FAC solo inventario", R["fac_only_inv"], R["inv_fac_w"])
+                    _sheet_vta("FAC solo ventas",     R["fac_only_vta"], R["v_fac_w"])
+                    _sheet_inv("NC solo inventario",  R["nct_only_inv"], R["inv_nct_w"])
+                    _sheet_vta("NC solo ventas",      R["nct_only_vta"], R["v_nct_w"])
+                    if R["gap_rows"]:
+                        pd.DataFrame(R["gap_rows"]).sort_values(["Fecha", "Origen"]).to_excel(
+                            _xw, sheet_name="Dias con diferencias", index=False
+                        )
+                st.download_button(
+                    "📥 Descargar cruce inventario ↔ ventas (xlsx)",
+                    _buf.getvalue(),
+                    "auditoria_cruce_inv_ventas.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="aud_cruce_xl",
+                )
 
     # ── Export del reporte ──
     st.markdown("#### 📥 Exportar auditoría")

@@ -8,6 +8,20 @@ secondaryBackgroundColor = "#ffffff"
 textColor = "#0f172a"
 font = "sans serif"
 
+[theme.dark]
+# Variante dark — habilita el switcher nativo (hamburguesa → Settings →
+# Choose app theme). Mismo color primario, fondo slate, texto casi blanco.
+base = "dark"
+primaryColor = "#00a0dc"
+backgroundColor = "#0f172a"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#f1f5f9"
+font = "sans serif"
+
+[client]
+# Asegura que el menu hamburguesa y toolbar con la opcion de tema esten visibles.
+toolbarMode = "auto"
+
 [browser]
 gatherUsageStats = false
 
