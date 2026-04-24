@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.32"
+APP_VERSION = "v4.17.33"
 BUILD_TIME  = "23/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.32":
+if st.session_state.get("_app_version") != "v4.17.33":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.32"
+    st.session_state["_app_version"] = "v4.17.33"
 
 st.set_page_config(page_title=f"Inventario AutoSky {APP_VERSION}", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -3102,11 +3102,11 @@ r=st.session_state.result
 # ── Sin datos ────────────────────────────────────────────────────
 if eng.raw_df is None:
     st.markdown("## 📦 Sistema de Inventario")
-    _card_bg  = "#f0f8ff"
-    _card_bdr = "#b3dff2"
-    _card_ver = "#0078b4"
-    _card_sep = "#94a3b8"
-    _card_txt = "#475569"
+    _card_bg  = "var(--secondary-background-color)"
+    _card_bdr = "rgba(0,160,220,0.25)"
+    _card_ver = "var(--primary-color)"
+    _card_sep = "var(--text-color);opacity:0.4"
+    _card_txt = "var(--text-color);opacity:0.7"
     st.markdown(f"""
 <div style='display:inline-flex;align-items:center;gap:12px;
   background:{_card_bg};border:1px solid {_card_bdr};border-radius:8px;
@@ -3178,12 +3178,12 @@ if eng.raw_df is not None and "Fecha" in eng.raw_df.columns:
         if not _all_d.empty:
             _pd1=_all_d.min().strftime("%d/%m/%Y")
             _pd2=_all_d.max().strftime("%d/%m/%Y")
-            _pb_bg  = "#f0f8ff"
-            _pb_bdr = "#b3dff2"
-            _pb_lbl = "#475569"
-            _pb_dt  = "#0f172a"
-            _pb_arr = "#94a3b8"
-            _pb_mut = "#64748b"
+            _pb_bg  = "var(--secondary-background-color)"
+            _pb_bdr = "rgba(0,160,220,0.25)"
+            _pb_lbl = "var(--text-color);opacity:0.7"
+            _pb_dt  = "var(--text-color)"
+            _pb_arr = "var(--text-color);opacity:0.5"
+            _pb_mut = "var(--text-color);opacity:0.6"
             st.markdown(
                 f"<div class='as-periodo-banner' style='display:inline-flex;align-items:center;gap:16px;"
                 f"background:{_pb_bg};border:1px solid {_pb_bdr};border-radius:8px;"
