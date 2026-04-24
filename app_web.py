@@ -49,7 +49,7 @@ def _rerun_frag():
     except Exception:
         st.rerun()
 
-APP_VERSION = "v4.17.33"
+APP_VERSION = "v4.17.34"
 BUILD_TIME  = "23/04/2026 GMT-5"
 
 # ── Diagnóstico de inicio (log) ──────────────────────────────
@@ -64,9 +64,9 @@ try:
 except Exception: pass
 
 # Forzar recarga: limpiar estado de sesión si la versión cambió
-if st.session_state.get("_app_version") != "v4.17.33":
+if st.session_state.get("_app_version") != "v4.17.34":
     st.session_state.clear()
-    st.session_state["_app_version"] = "v4.17.33"
+    st.session_state["_app_version"] = "v4.17.34"
 
 st.set_page_config(page_title=f"Inventario AutoSky {APP_VERSION}", page_icon="📦",
                    layout="wide", initial_sidebar_state="expanded")
@@ -995,12 +995,20 @@ MUTED = "#64748b"
 _CSS = '''
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
 :root {
-  /* Paleta alineada con DashboardCxC — AUTOSKY DESIGN SYSTEM Light v1.3 */
+  /* Paleta alineada con DashboardCxC — AUTOSKY DESIGN SYSTEM v1.4
+     bg/surface/text apuntan a las CSS vars que Streamlit expone via
+     config.toml ([theme] / [theme.dark]). Fallback al valor light
+     para versiones de Streamlit que no las expongan. */
   --sky:#0078b4; --sky-d:#003c78; --sky-dd:#00284f;
   --sky-l:#e0f4fb; --sky-ll:#f0faff;
-  --bg:#ffffff; --surface:#ffffff; --surface2:#f8fafc;
-  --border:#e2e8f0; --border2:#cbd5e1;
-  --text:#0f172a; --text2:#475569; --text3:#94a3b8;
+  --bg:       var(--background-color, #ffffff);
+  --surface:  var(--secondary-background-color, #ffffff);
+  --surface2: rgba(148,163,184,0.08);
+  --border:   rgba(148,163,184,0.25);
+  --border2:  rgba(148,163,184,0.4);
+  --text:     var(--text-color, #0f172a);
+  --text2:    rgba(148,163,184,0.85);
+  --text3:    rgba(148,163,184,0.65);
   --green:#059669; --green-l:#ecfdf5; --green-bg:#ecfdf5;
   --red:#dc2626; --red-l:#fef2f2; --red-bg:#fef2f2;
   --amber:#d97706; --amber-l:#fffbeb; --amber-bg:#fffbeb;
