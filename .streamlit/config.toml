@@ -1,21 +1,14 @@
 [theme]
 # Paleta alineada con DashboardCxC — AUTOSKY DESIGN SYSTEM Light v1.3
-# Sky Blue corporativo · fondo blanco · superficie blanca
+# Sky Blue corporativo · fondo blanco · superficie blanca.
+# App es light-only por diseño — Streamlit 1.56 no expone CSS vars del
+# theme con nombres consultables, lo que impide hacer dark coherente
+# en bloques HTML inline. Ver memory/project_tema_polish_pendiente.md.
 base = "light"
 primaryColor = "#0078b4"
 backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#ffffff"
 textColor = "#0f172a"
-font = "sans serif"
-
-[theme.dark]
-# Variante dark — habilita el switcher nativo (hamburguesa → Settings →
-# Choose app theme). Mismo color primario, fondo slate, texto casi blanco.
-base = "dark"
-primaryColor = "#00a0dc"
-backgroundColor = "#0f172a"
-secondaryBackgroundColor = "#1e293b"
-textColor = "#f1f5f9"
 font = "sans serif"
 
 [client]
